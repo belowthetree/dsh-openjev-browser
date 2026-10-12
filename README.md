@@ -27,14 +27,14 @@ sites by dropping the `mcp__openjev-browser__` prefix.
 
 ```bash
 pnpm install   # or: pnpm install --ignore-scripts in a sandbox
-pnpm build     # esbuild -> lib/
+pnpm build     # tsc (host) + esbuild (client) -> lib/
 ```
 
 Then register the bundle directory with DSH (see `cordis.patch.yml`):
 
 ```yaml
 - insert:
-  - id: openjev-browser
+  - id: dsh-openjev-browser
     name: dsh-openjev-browser
 ```
 
@@ -56,6 +56,14 @@ available; selector-based calls keep working without one.
 
 ### Downloading the model (~8 GB)
 
+From the **settings page** (Settings → OpenJev Browser, or the plugin card):
+pick a directory, press *Start download*, watch progress, cancel any time —
+a validated download becomes the model directory automatically. You can also
+point *Model directory* at any already-downloaded model (an OpenJev artifact,
+or a folder with `config.json` / `*.safetensors`).
+
+From the CLI:
+
 ```bash
 node lib/setup.js download --dir D:\models\OpenJev-4B   # resumable
 node lib/setup.js detect                                 # verify
@@ -65,13 +73,26 @@ node lib/setup.js print-config                           # emit config snippet
 or set `HF_ENDPOINT` style mirrors by pointing `--repo` elsewhere. Downloads
 are validated against the artifact manifest before use.
 
+### Settings page & precedence
+
+The client half registers a settings section (`OpenJev Browser`) backed by a
+loopback-only API at `/dsh-openjev-browser/api`. Values saved there live in
+`$DSH_HOME/dsh-openjev-browser.settings.json` and apply **immediately**
+(no restart) — with precedence:
+
+```
+built-in defaults  <  loader patch config  <  settings file
+```
+
+The settings file is plain JSON; delete it to fall back to patch config.
+
 ### Configuration
 
 All fields optional (defaults shown):
 
 ```yaml
 - insert:
-  - id: openjev-browser
+  - id: dsh-openjev-browser
     name: dsh-openjev-browser
     config:
       openjevUrl: http://127.0.0.1:8080   # existing service wins if reachable

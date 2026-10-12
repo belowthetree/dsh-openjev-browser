@@ -1,5 +1,6 @@
-/** Build: type-check + emit via the TypeScript compiler (no esbuild service
- * spawn, so this also works in restricted sandboxes). */
+/** Build: type-check + emit host sources via the TypeScript compiler (no
+ * esbuild service spawn for the host half), then bundle the client half
+ * (settings page) with esbuild into the __ModuleLoader__ format. */
 
 import { spawnSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -22,3 +23,31 @@ if (!source.startsWith('#!')) {
   writeFileSync(setupJs, `#!/usr/bin/env node\n${source}`)
 }
 console.log('built lib/ (tsc)')
+
+// Client half: esbuild bundles src/client/ into lib/client.js. Externals
+// (react, dsh client packages) are provided by the DSH __ModuleLoader__.
+const esbuild = await import('esbuild')
+await esbuild.build({
+  entryPoints: [join(root, 'src', 'client', 'index.tsx')],
+  bundle: true,
+  format: 'cjs',
+  platform: 'browser',
+  target: 'es2020',
+  outfile: join(root, 'lib', 'client.js'),
+  logLevel: 'warning',
+  external: [
+    'react',
+    'react-dom',
+    'react/jsx-runtime',
+    'react-dom/client',
+    '@deepseek-ai/*',
+  ],
+  banner: {
+    js: 'window.__ModuleLoader__.load({id:"dsh-openjev-browser",factory:(require)=>{var module={exports:{}};var exports=module.exports;',
+  },
+  footer: {
+    js: 'return module.exports;}});',
+  },
+})
+console.log('built lib/client.js (esbuild)')
+

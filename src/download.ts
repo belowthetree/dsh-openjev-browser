@@ -27,10 +27,17 @@ export interface DownloadOptions {
   concurrency?: number
   onProgress?: (p: DownloadProgress) => void
   signal?: AbortSignal
+  /** Pre-listed files (name+size); skips the internal listing when given. */
+  files?: { name: string; size: number }[]
 }
 
 interface ModelInfo {
   siblings?: { rfilename: string }[]
+}
+
+interface TreeEntry {
+  path: string
+  size?: number
 }
 
 /** List repo files via the HF API. */
@@ -42,6 +49,29 @@ export async function listRepoFiles(repo: string, signal?: AbortSignal): Promise
   const files = (info.siblings ?? []).map((s) => s.rfilename)
   if (files.length === 0) throw new Error(`HF repo ${repo} listed no files`)
   return files
+}
+
+/**
+ * List repo files with byte sizes via the HF tree API (for progress totals).
+ * Falls back to the plain listing (size 0) when the tree endpoint fails.
+ */
+export async function listRepoFilesWithSizes(
+  repo: string,
+  signal?: AbortSignal,
+): Promise<{ name: string; size: number }[]> {
+  try {
+    const url = `https://huggingface.co/api/models/${repo}/tree/main?recursive=true`
+    const response = await fetch(url, { signal })
+    if (!response.ok) throw new Error(`HF API ${response.status}`)
+    const entries = (await response.json()) as TreeEntry[]
+    const files = entries
+      .filter((e) => typeof e.path === 'string')
+      .map((e) => ({ name: e.path, size: typeof e.size === 'number' ? e.size : 0 }))
+    if (files.length > 0) return files
+  } catch {
+    // fall through to the size-less listing
+  }
+  return (await listRepoFiles(repo, signal)).map((name) => ({ name, size: 0 }))
 }
 
 async function fileSize(path: string): Promise<number> {
@@ -98,7 +128,9 @@ async function downloadFile(
  */
 export async function downloadRepo(options: DownloadOptions): Promise<string[]> {
   const { repo, dir, revision = 'main', concurrency = 4, onProgress, signal } = options
-  const files = await listRepoFiles(repo, signal)
+  const files = options.files
+    ? options.files.map((f) => f.name)
+    : await listRepoFiles(repo, signal)
   await mkdir(dir, { recursive: true })
 
   let bytesDone = 0
