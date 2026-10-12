@@ -1,36 +1,33 @@
 # dsh-openjev-browser
 
-Native [DSH](https://github.com/DeepSeek-AI) (cordis) plugin port of the
-[`openjev-browser`](../) MCP stdio tool: model-driven browser control with a
-tiny context footprint. A local [OpenJev](https://huggingface.co/shenjunhao/OpenJev-4B)
-decision model reads the page and returns only the one element that matters,
-so the agent never ingests the DOM.
+[English README](README-EN.md)
 
-## Tools
+[`openjev-browser`](../) MCP stdio 工具的原生 [DSH](https://github.com/DeepSeek-AI)(cordis)插件版:以极小上下文开销实现模型驱动的浏览器操控。本地 [OpenJev](https://huggingface.co/shenjunhao/OpenJev-4B) 决策模型读取页面后只返回关键的那一个元素,agent 全程不接触 DOM。
 
-| Tool | Purpose |
+## 工具
+
+| 工具 | 用途 |
 | --- | --- |
-| `browser_open` | Open a URL (auto/chrome/msedge/chromium, optional profile reuse) |
-| `browser_pick` | Ask OpenJev which element accomplishes a natural-language goal |
-| `browser_click` | Click by goal or CSS selector |
-| `browser_type` | Type into an element chosen by goal or selector |
-| `browser_text` | Read a bounded slice of text from the page or one element |
-| `browser_scroll` | Scroll the page, or scroll an element into view |
-| `browser_screenshot` | Return a page image (with optional goal-box highlight) |
-| `browser_status` | Report model/service detection state and setup guidance |
-| `browser_close` | Close the browser session |
+| `browser_open` | 打开 URL(auto/chrome/msedge/chromium,可复用已有浏览器配置) |
+| `browser_pick` | 让 OpenJev 判断哪个元素能完成自然语言目标 |
+| `browser_click` | 按目标或 CSS 选择器点击 |
+| `browser_type` | 向按目标或选择器选中的元素输入文本 |
+| `browser_text` | 读取页面或单个元素的有界文本片段 |
+| `browser_scroll` | 滚动页面,或将某元素滚入视口 |
+| `browser_screenshot` | 返回页面截图(可选目标元素高亮框) |
+| `browser_status` | 报告模型/服务检测状态与部署指引 |
+| `browser_close` | 关闭浏览器会话 |
 
-Tool names and parameter schemas match the Python MCP server; migrate call
-sites by dropping the `mcp__openjev-browser__` prefix.
+工具名与参数 schema 与 Python MCP server 完全一致;迁移调用点只需去掉 `mcp__openjev-browser__` 前缀。
 
-## Install
+## 安装
 
 ```bash
-pnpm install   # or: pnpm install --ignore-scripts in a sandbox
-pnpm build     # tsc (host) + esbuild (client) -> lib/
+pnpm install   # 沙箱内可用:pnpm install --ignore-scripts
+pnpm build     # tsc(宿主侧)+ esbuild(客户端)-> lib/
 ```
 
-Then register the bundle directory with DSH (see `cordis.patch.yml`):
+然后把构建产物目录注册到 DSH(见 `cordis.patch.yml`):
 
 ```yaml
 - insert:
@@ -38,118 +35,104 @@ Then register the bundle directory with DSH (see `cordis.patch.yml`):
     name: dsh-openjev-browser
 ```
 
-## Model setup
+## 模型部署
 
-The plugin **ships no model weights and no python runtime** — both are
-user-deployed. The settings page (*Deployment* card) carries a **copy-paste
-agent prompt**: hand it to any DSH agent and it performs the whole setup
-(python env + model + smoke test) and reports back the two paths to fill in.
-The underlying spec lives in [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+插件**不附带模型权重,也不附带 Python 运行时** —— 两者均由用户自行部署。设置面板(「部署指引」卡片)内置了**可复制的 agent 提示词**:把它粘贴给任意一个 DSH 会话,agent 会自动完成全部部署(Python 环境 + 模型 + 冒烟自检)并回报需要填入的两个路径。底层规范见 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)。
 
-After deployment the plugin detects, in order:
+部署完成后,插件按以下顺序检测:
 
-1. a running decision service at `openjevUrl` (default `http://127.0.0.1:8080`);
-2. a local artifact (`config.modelDir`, `$OPENJEV_ARTIFACT`, `$OPENJEV_MODEL`,
-   `~/.openjev/models/OpenJev-4B`, `~/.dsh/openjev/models/OpenJev-4B`)
-   validated against `manifest.json` + `COMPLETE`;
-3. a python interpreter with the `openjev` package to serve that artifact —
-   resolution order: `config.pythonPath` → `$OPENJEV_PYTHON` → `python` on
-   PATH. The plugin then **auto-starts** `python -m openjev.runtime.server`
-   on first use.
+1. `openjevUrl`(默认 `http://127.0.0.1:8080`)上已在运行的决策服务;
+2. 本地工件(`config.modelDir`、`$OPENJEV_ARTIFACT`、`$OPENJEV_MODEL`、
+   `~/.openjev/models/OpenJev-4B`、`~/.dsh/openjev/models/OpenJev-4B`),
+   按 `manifest.json` + `COMPLETE` 校验;
+3. 装有 `openjev` 包的 Python 解释器 —— 解析顺序:`config.pythonPath` →
+   `$OPENJEV_PYTHON` → PATH 上的 `python`。满足条件后插件会在首次使用时
+   **自动拉起** `python -m openjev.runtime.server`。
 
-Goal-driven tools (`browser_pick`, and the `goal` path of click/type/text/
-scroll/screenshot) fail soft with structured setup guidance when no model is
-available; selector-based calls keep working without one.
+没有可用模型时,目标驱动类工具(`browser_pick`,以及 click/type/text/scroll/screenshot 的 `goal` 路径)会软失败并返回结构化的部署指引;纯选择器调用不依赖模型,始终可用。
 
-### Deploying (2 minutes of agent time + ~8 GB of download)
+### 部署流程(agent 操作约 2 分钟 + 约 8 GB 下载)
 
-Settings → OpenJev Browser → *Deployment* → **Copy deployment prompt** →
-paste into a fresh DSH session. The prompt instructs the agent to:
+设置 → OpenJev 浏览器 → 「部署指引」→ **复制部署提示词** → 粘贴到一个新的 DSH 会话。提示词会指示 agent:
 
-- create a python 3.12 env **outside the DSH session workspace** (sandbox
-  per-executable write confinement makes workspace python almost unusable),
-  at `%USERPROFILE%\.dsh\openjev\runtime` by default;
-- `uv pip install` torch (CPU or CUDA 12.8 index) and
+- 在 **DSH 会话工作区之外**创建 Python 3.12 环境(沙箱按可执行文件路径限制写权限,工作区内的 python 几乎不可用),默认位置 `%USERPROFILE%\.dsh\openjev\runtime`;
+- 用 `uv pip install` 安装 torch(CPU 或 CUDA 12.8 索引)与
   `openjev[serve] @ git+https://github.com/ejhshen/OpenJev.git`
-  (the PyPI name `openjev` is an unrelated squatter — git only);
-- download HF repo `shenjunhao/OpenJev-4B` (~8 GB) and verify it against the
-  artifact manifest (`COMPLETE` == sha256 of `manifest.json`, exact sizes);
-- smoke-test `python -m openjev.runtime.server --artifact <dir>` until
-  `/health` returns ready;
-- tell you the **Python path** and **model directory** to save in settings.
+  (PyPI 上的 `openjev` 包名被无关项目占用 —— 必须走 git 安装);
+- 下载 HF 仓库 `shenjunhao/OpenJev-4B`(约 8 GB)并按工件清单校验
+  (`COMPLETE` == `manifest.json` 的 sha256,逐文件字节数一致);
+- 冒烟测试 `python -m openjev.runtime.server --artifact <dir>`,直到
+  `/health` 返回 ready;
+- 回报 **Python 路径**与**模型目录**,由你填进设置面板保存。
 
-CLI equivalents for detection afterwards:
+事后的 CLI 检测:
 
 ```bash
-node lib/setup.js detect          # probe service / artifact / python
-node lib/setup.js print-config    # emit a cordis.patch.yml config snippet
+node lib/setup.js detect          # 探测服务 / 工件 / python
+node lib/setup.js print-config    # 输出 cordis.patch.yml 配置片段
 ```
 
-### Spawned-child temp dirs (Windows sandbox note)
+### 子进程临时目录(Windows 沙箱说明)
 
-Every spawned python child gets `TMP/TEMP/TMPDIR/TORCHINDUCTOR_CACHE_DIR`
-redirected into `$DSH_HOME/openjev/tmp`: the DSH host sandbox can make the
-system temp dir unusable for plugin-spawned processes (torch inductor dies
-with *"No usable temporary directory found"* otherwise). A `pythonPath`
-pointing at an interpreter **inside the session workspace** is additionally
-confined to workspace writes by the sandbox, so the plugin probes each
-interpreter once and falls back to `.openjev-tmp/` beside that interpreter.
+插件拉起的每个 python 子进程都会把 `TMP/TEMP/TMPDIR/TORCHINDUCTOR_CACHE_DIR`
+重定向到 `$DSH_HOME/openjev/tmp`:DSH 宿主沙箱可能让插件子进程无法使用系统
+临时目录(否则 torch inductor 会报 *"No usable temporary directory found"*)。
+如果 `pythonPath` 指向**会话工作区内**的解释器,沙箱会进一步把它限制为只能写
+工作区,插件会对每个解释器探测一次,不可写时回退到该解释器旁的 `.openjev-tmp/`。
 
-### Settings page & precedence
+### 设置面板与优先级
 
-The client half registers a settings section (`OpenJev Browser`) backed by a
-loopback-only API at `/dsh-openjev-browser/api`. Values saved there live in
-`$DSH_HOME/dsh-openjev-browser.settings.json` and apply **immediately**
-(no restart) — with precedence:
+客户端部分注册了一个设置分区(「OpenJev 浏览器」),由仅监听回环地址的 API
+`/dsh-openjev-browser/api` 支撑。面板中保存的值写入
+`$DSH_HOME/dsh-openjev-browser.settings.json` 并**立即生效**(无需重启),优先级:
 
 ```
-built-in defaults  <  loader patch config  <  settings file
+内置默认值  <  loader patch 配置  <  设置文件
 ```
 
-The settings file is plain JSON; delete it to fall back to patch config.
+设置文件是纯 JSON;删掉它即回退到 patch 配置。
 
-### Configuration
+### 配置项
 
-All fields optional (defaults shown):
+全部可选(示例值为默认值):
 
 ```yaml
 - insert:
   - id: dsh-openjev-browser
     name: dsh-openjev-browser
     config:
-      openjevUrl: http://127.0.0.1:8080   # existing service wins if reachable
-      modelDir: null                      # local artifact dir
-      pythonPath: null                    # python with the openjev package
-      autoStartServer: true               # spawn the server when 2+3 hold
+      openjevUrl: http://127.0.0.1:8080   # 已有服务可达时优先使用
+      modelDir: null                      # 本地工件目录
+      pythonPath: null                    # 装有 openjev 包的 python
+      autoStartServer: true               # 满足检测 2+3 时自动拉起服务
       serverPort: 8080
-      serverStartupTimeoutMs: 240000      # first Triton JIT can take minutes
+      serverStartupTimeoutMs: 240000      # 首次 Triton JIT 可能要几分钟
       browser: auto                       # auto|chrome|msedge|chromium
       headed: false
-      userDataDir: null                   # reuse a logged-in profile
+      userDataDir: null                   # 复用已登录的浏览器配置
       maxCandidates: 80
       includeOffscreen: true
       maxNameLength: 90
       viewport: [1280, 900]
       timeoutMs: 30000
-      debugDir: null                      # dump withheld observations here
+      debugDir: null                      # 在此落盘被截断的观测数据
 ```
 
-## Screenshots
+## 截图
 
-`browser_screenshot` returns the image inline when the active model route
-accepts image input (checked via `llm.resolveModelInfo`), otherwise the tool
-degrades to metadata text with `[image unavailable: ...]` and a hint to pass
-`path` to save the file.
+当当前模型路由接受图像输入时(经 `llm.resolveModelInfo` 检查),
+`browser_screenshot` 会内联返回图片;否则降级为元数据文本并附
+`[image unavailable: ...]`,提示改用 `path` 参数把文件存盘。
 
-## Development
+## 开发
 
 ```bash
 pnpm typecheck
-node scripts/smoke.mjs   # mock-ctx smoke: registers tools, opens about:blank
+node scripts/smoke.mjs   # mock-ctx 冒烟:注册工具、打开 about:blank
 ```
 
-Architecture and the Python→Node porting notes: [`../docs/dsh-plugin-plan.md`](../docs/dsh-plugin-plan.md).
+架构说明与 Python→Node 移植笔记:[`../docs/dsh-plugin-plan.md`](../docs/dsh-plugin-plan.md)。
 
-## License
+## 许可证
 
-MIT (c) 2026 Junhao Shen — see [LICENSE](LICENSE).
+MIT (c) 2026 Junhao Shen —— 见 [LICENSE](LICENSE)。
