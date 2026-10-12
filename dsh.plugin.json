@@ -1,0 +1,9 @@
+{
+  "name": "dsh-openjev-browser",
+  "description": "Model-driven browser control: OpenJev-4B picks the element, Playwright does the rest",
+  "version": "0.1.0",
+  "entry": {
+    "name": "dsh-openjev-browser",
+    "inject": ["tools"]
+  }
+}

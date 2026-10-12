@@ -1,0 +1,12 @@
+# dsh-openjev-browser bundle patch: mount the plugin under its package name,
+# resolved through the profile's node_modules.
+# Per-plugin configuration goes under `config:` (all keys optional):
+#   config:
+#     openjevUrl: http://127.0.0.1:8080   # running OpenJev decision service
+#     modelDir: D:/models/OpenJev-4B      # local artifact -> auto-start server
+#     pythonPath: C:/Python312/python.exe # python with the `openjev` package
+#     browser: auto                        # auto | chromium | chrome | msedge
+#     headed: false
+- insert:
+    - id: openjev-browser
+      name: dsh-openjev-browser
