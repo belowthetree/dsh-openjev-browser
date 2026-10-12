@@ -8,5 +8,5 @@
 #     browser: auto                        # auto | chromium | chrome | msedge
 #     headed: false
 - insert:
-    - id: openjev-browser
+    - id: dsh-openjev-browser
       name: dsh-openjev-browser
