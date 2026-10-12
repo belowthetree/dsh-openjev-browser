@@ -2,22 +2,20 @@
 /**
  * Setup CLI for dsh-openjev-browser.
  *
- * The plugin ships no model weights. This CLI detects, downloads and verifies
- * the OpenJev artifact:
+ * The plugin ships no model weights and no python runtime — both are
+ * user-deployed (see docs/DEPLOYMENT.md; the settings page carries a
+ * copy-paste agent prompt that performs the whole setup). This CLI only
+ * detects and verifies what is already there:
  *
  *   node lib/setup.js detect                     # probe service/artifact/python
- *   node lib/setup.js download [--dir <target>]  # fetch from Hugging Face
  *   node lib/setup.js print-config               # show a cordis.patch.yml snippet
  *
  * Exit codes: 0 ok / ready, 1 failure.
  */
 
-import { downloadRepo } from './download.js'
 import {
-  defaultDownloadDir,
   DEFAULT_REPO,
   detectStatus,
-  validateArtifact,
   type ModelConfig,
 } from './model.js'
 
@@ -49,7 +47,6 @@ function configFromFlags(flags: Record<string, string>): ModelConfig {
     serverPort: Number(flags.port ?? 8080),
     serverStartupTimeoutMs: 240_000,
     modelRepo: flags.repo ?? DEFAULT_REPO,
-    downloadDir: flags.dir ?? defaultDownloadDir(),
   }
 }
 
@@ -57,7 +54,6 @@ const USAGE = `dsh-openjev-browser setup
 
 Commands:
   detect                      Probe the decision service, local artifact and python.
-  download [--dir <target>]   Download the OpenJev model artifact (~8 GB) from Hugging Face.
   print-config                Print a cordis.patch.yml snippet with detected settings.
 
 Flags:
@@ -65,13 +61,10 @@ Flags:
   --model-dir <dir>           Existing artifact directory to validate/use
   --python <path>             Python interpreter with the openjev package
   --repo <org/name>           HF repo (default ${DEFAULT_REPO})
-`
 
-function formatBytes(n: number): string {
-  if (n >= 1 << 30) return `${(n / (1 << 30)).toFixed(2)} GiB`
-  if (n >= 1 << 20) return `${(n / (1 << 20)).toFixed(1)} MiB`
-  return `${n} B`
-}
+Deploying the python environment + model is covered by docs/DEPLOYMENT.md
+(the settings page ships the same instructions as a copy-paste agent prompt).
+`
 
 async function cmdDetect(config: ModelConfig): Promise<number> {
   const status = await detectStatus(config)
@@ -90,33 +83,6 @@ async function cmdDetect(config: ModelConfig): Promise<number> {
   console.log('\nNOT READY. Next steps:')
   for (const line of status.setup) console.log(`  ${line}`)
   return 1
-}
-
-async function cmdDownload(config: ModelConfig): Promise<number> {
-  const dir = config.downloadDir
-  console.log(`Downloading ${config.modelRepo} -> ${dir}`)
-  let lastPrint = 0
-  await downloadRepo({
-    repo: config.modelRepo,
-    dir,
-    onProgress: (p) => {
-      const now = Date.now()
-      if (now - lastPrint > 1000) {
-        lastPrint = now
-        process.stdout.write(`\r[${p.fileIndex}/${p.fileCount}] ${p.file}  total ${formatBytes(p.bytesDone)}   `)
-      }
-    },
-  })
-  process.stdout.write('\n')
-  const check = validateArtifact(dir)
-  if (!check.ok) {
-    console.error(`Download finished but validation failed: ${check.error}`)
-    console.error('Re-run the command to resume and complete missing files.')
-    return 1
-  }
-  console.log(`OK: artifact verified (${check.files} files, ${formatBytes(check.totalBytes ?? 0)})`)
-  console.log(`\nSet this in your plugin config:\n  modelDir: ${JSON.stringify(dir)}`)
-  return 0
 }
 
 async function cmdPrintConfig(config: ModelConfig): Promise<number> {
@@ -140,8 +106,6 @@ async function main(): Promise<number> {
   switch (command) {
     case 'detect':
       return cmdDetect(config)
-    case 'download':
-      return cmdDownload(config)
     case 'print-config':
       return cmdPrintConfig(config)
     case 'help':

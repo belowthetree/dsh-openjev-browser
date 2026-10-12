@@ -40,70 +40,60 @@ Then register the bundle directory with DSH (see `cordis.patch.yml`):
 
 ## Model setup
 
-The plugin **ships no model weights**. After install it detects, in order:
+The plugin **ships no model weights and no python runtime** — both are
+user-deployed. The settings page (*Deployment* card) carries a **copy-paste
+agent prompt**: hand it to any DSH agent and it performs the whole setup
+(python env + model + smoke test) and reports back the two paths to fill in.
+The underlying spec lives in [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+
+After deployment the plugin detects, in order:
 
 1. a running decision service at `openjevUrl` (default `http://127.0.0.1:8080`);
 2. a local artifact (`config.modelDir`, `$OPENJEV_ARTIFACT`, `$OPENJEV_MODEL`,
    `~/.openjev/models/OpenJev-4B`, `~/.dsh/openjev/models/OpenJev-4B`)
    validated against `manifest.json` + `COMPLETE`;
 3. a python interpreter with the `openjev` package to serve that artifact —
-   resolution order: `config.pythonPath` → the **managed runtime** (below) →
-   `$OPENJEV_PYTHON` → `python` on PATH. The plugin then **auto-starts**
-   `python -m openjev.runtime.server` on first use.
+   resolution order: `config.pythonPath` → `$OPENJEV_PYTHON` → `python` on
+   PATH. The plugin then **auto-starts** `python -m openjev.runtime.server`
+   on first use.
 
 Goal-driven tools (`browser_pick`, and the `goal` path of click/type/text/
 scroll/screenshot) fail soft with structured setup guidance when no model is
 available; selector-based calls keep working without one.
 
-### Managed python runtime (no user-side setup)
+### Deploying (2 minutes of agent time + ~8 GB of download)
 
-The plugin can bootstrap a fully self-contained interpreter — **users never
-deploy python themselves**. From the settings page (*Runtime (Python)* card)
-press *Install runtime*; it downloads, into `$DSH_HOME/openjev/`:
+Settings → OpenJev Browser → *Deployment* → **Copy deployment prompt** →
+paste into a fresh DSH session. The prompt instructs the agent to:
 
-| Piece | What | Size |
-| --- | --- | --- |
-| `bin/uv` | [astral-sh/uv](https://github.com/astral-sh/uv) env manager | ~15 MB |
-| `runtime/` | standalone CPython 3.12 venv (fetched by uv) | ~120 MB |
-| packages | `torch` (CPU build by default) + `openjev[serve]` from git | ~400 MB |
+- create a python 3.12 env **outside the DSH session workspace** (sandbox
+  per-executable write confinement makes workspace python almost unusable),
+  at `%USERPROFILE%\.dsh\openjev\runtime` by default;
+- `uv pip install` torch (CPU or CUDA 12.8 index) and
+  `openjev[serve] @ git+https://github.com/ejhshen/OpenJev.git`
+  (the PyPI name `openjev` is an unrelated squatter — git only);
+- download HF repo `shenjunhao/OpenJev-4B` (~8 GB) and verify it against the
+  artifact manifest (`COMPLETE` == sha256 of `manifest.json`, exact sizes);
+- smoke-test `python -m openjev.runtime.server --artifact <dir>` until
+  `/health` returns ready;
+- tell you the **Python path** and **model directory** to save in settings.
 
-The PyTorch build is selectable (CPU / CUDA 12.6 / CUDA 12.8 — CUDA ~2.5 GB
-larger, faster on NVIDIA GPUs), and the openjev install source is
-configurable (`runtimeSpec`, default
-`openjev[serve] @ git+https://github.com/ejhshen/OpenJev.git` — the PyPI name
-`openjev` is an unrelated squatter, so installs go through git).
-
-Every spawned child (uv, python, the decision server) gets `TMP/TEMP/
-TMPDIR/TORCHINDUCTOR_CACHE_DIR` redirected into `$DSH_HOME/openjev/tmp`: the
-DSH host sandbox can make the system temp dir unusable for plugin-spawned
-processes (torch inductor dies with *"No usable temporary directory found"*
-otherwise). One exception: a `pythonPath` pointing at an interpreter
-**inside the session workspace** is confined to workspace writes by the
-sandbox, so the plugin probes each interpreter once and, when the shared tmp
-dir is not writable from it, falls back to `.openjev-tmp/` beside that
-interpreter.
-
-CLI/API equivalents: `POST /dsh-openjev-browser/api/runtime/install`
-(cancellable via `.../runtime/cancel`, poll `GET .../runtime`).
-
-### Downloading the model (~8 GB)
-
-From the **settings page** (Settings → OpenJev Browser, or the plugin card):
-pick a directory, press *Start download*, watch progress, cancel any time —
-a validated download becomes the model directory automatically. You can also
-point *Model directory* at any already-downloaded model (an OpenJev artifact,
-or a folder with `config.json` / `*.safetensors`).
-
-From the CLI:
+CLI equivalents for detection afterwards:
 
 ```bash
-node lib/setup.js download --dir D:\models\OpenJev-4B   # resumable
-node lib/setup.js detect                                 # verify
-node lib/setup.js print-config                           # emit config snippet
+node lib/setup.js detect          # probe service / artifact / python
+node lib/setup.js print-config    # emit a cordis.patch.yml config snippet
 ```
 
-or set `HF_ENDPOINT` style mirrors by pointing `--repo` elsewhere. Downloads
-are validated against the artifact manifest before use.
+### Spawned-child temp dirs (Windows sandbox note)
+
+Every spawned python child gets `TMP/TEMP/TMPDIR/TORCHINDUCTOR_CACHE_DIR`
+redirected into `$DSH_HOME/openjev/tmp`: the DSH host sandbox can make the
+system temp dir unusable for plugin-spawned processes (torch inductor dies
+with *"No usable temporary directory found"* otherwise). A `pythonPath`
+pointing at an interpreter **inside the session workspace** is additionally
+confined to workspace writes by the sandbox, so the plugin probes each
+interpreter once and falls back to `.openjev-tmp/` beside that interpreter.
 
 ### Settings page & precedence
 
@@ -128,11 +118,8 @@ All fields optional (defaults shown):
     name: dsh-openjev-browser
     config:
       openjevUrl: http://127.0.0.1:8080   # existing service wins if reachable
-      modelDir: null                      # local artifact dir (skip download if set)
+      modelDir: null                      # local artifact dir
       pythonPath: null                    # python with the openjev package
-      runtimeDir: null                    # managed venv (default $DSH_HOME/openjev/runtime)
-      runtimeSpec: "openjev[serve] @ git+https://github.com/ejhshen/OpenJev.git"
-      runtimeTorchIndex: https://download.pytorch.org/whl/cpu   # or .../whl/cu126, .../whl/cu128
       autoStartServer: true               # spawn the server when 2+3 hold
       serverPort: 8080
       serverStartupTimeoutMs: 240000      # first Triton JIT can take minutes

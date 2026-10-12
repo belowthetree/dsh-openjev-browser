@@ -12,22 +12,14 @@
  */
 
 import { buildTools, SessionManager, type PluginDeps } from './tools.js'
-import { defaultDownloadDir, ModelManager, type ModelConfig } from './model.js'
+import { ModelManager, type ModelConfig } from './model.js'
 import { mergeWithSettings } from './settings.js'
 import { createApiHandler, API_PREFIX } from './api.js'
-import {
-  DEFAULT_RUNTIME_SPEC,
-  DEFAULT_TORCH_INDEX,
-  defaultRuntimeDir,
-  RuntimeManager,
-} from './runtime.js'
 
 export const name = 'dsh-openjev-browser'
 export const inject = ['tools']
 
 export interface PluginConfig extends ModelConfig {
-  runtimeSpec: string
-  runtimeTorchIndex: string
   browser: string
   headed: boolean
   userDataDir?: string
@@ -58,14 +50,10 @@ export function normalizeConfig(input: unknown): PluginConfig {
     openjevUrl: str('openjevUrl', 'http://127.0.0.1:8080'),
     modelDir: optStr('modelDir'),
     pythonPath: optStr('pythonPath'),
-    runtimeDir: optStr('runtimeDir'),
-    runtimeSpec: str('runtimeSpec', DEFAULT_RUNTIME_SPEC),
-    runtimeTorchIndex: str('runtimeTorchIndex', DEFAULT_TORCH_INDEX),
     autoStartServer: bool('autoStartServer', true),
     serverPort: num('serverPort', 8080),
     serverStartupTimeoutMs: num('serverStartupTimeoutMs', 240_000),
     modelRepo: str('modelRepo', 'shenjunhao/OpenJev-4B'),
-    downloadDir: str('downloadDir', defaultDownloadDir()),
     browser: str('browser', 'auto'),
     headed: bool('headed', false),
     userDataDir: optStr('userDataDir'),
@@ -113,7 +101,6 @@ export function apply(ctx: Context, rawConfig?: unknown): void {
   }
 
   const models = new ModelManager(config, log)
-  const runtime = new RuntimeManager(() => config.runtimeDir || defaultRuntimeDir(), log)
   const deps: PluginDeps = { ctx, config, models, log }
   const sessions = new SessionManager(deps)
 
@@ -132,7 +119,7 @@ export function apply(ctx: Context, rawConfig?: unknown): void {
   // profiles). Optional inject keeps headless/tools-only hosts working.
   const registerApi = (webServer: any) => {
     if (!webServer || typeof webServer.register !== 'function') return
-    const handler = createApiHandler({ config, loaderConfig: rawConfig, models, runtime, log, applySavedSettings })
+    const handler = createApiHandler({ config, loaderConfig: rawConfig, models, log, applySavedSettings })
     const register = () => webServer.register({ kind: 'prefix', path: API_PREFIX, handler })
     if (typeof ctx.effect === 'function') ctx.effect(register, 'settings api')
     else register()
@@ -154,7 +141,6 @@ export function apply(ctx: Context, rawConfig?: unknown): void {
       ctx.on('dispose', () => {
         void sessions.close().catch(() => {})
         models.dispose()
-        runtime.cancel()
       })
     } catch {
       // dispose hook unsupported; sessions die with the process anyway

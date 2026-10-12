@@ -5,9 +5,9 @@
  * plugins page (settings.plugin.item), both backed by the host HTTP API at
  * /dsh-openjev-browser/api. Lets the user:
  *   1. see detection status (decision server / artifact / python);
- *   2. point the plugin at an already-downloaded model directory;
- *   3. pick a directory and download the OpenJev model into it (progress,
- *      cancel, auto-save modelDir on completion);
+ *   2. deploy the python environment + model by handing a copy-paste agent
+ *      prompt to any DSH agent (the plugin ships no runtime / weights);
+ *   3. point the plugin at the deployed model directory;
  *   4. tune server settings (url / python / auto-start) and start/stop the
  *      managed decision server.
  *
@@ -25,131 +25,133 @@ const NS = 'dsh-openjev-browser'
 const API = '/dsh-openjev-browser/api'
 
 // ---------------------------------------------------------------------------
+// Deployment agent prompt (mirrors docs/DEPLOYMENT.md)
+// ---------------------------------------------------------------------------
+
+const PROMPT_ZH = `请帮我部署 dsh-openjev-browser 插件所需的 OpenJev 决策模型运行环境,并严格按以下要求执行:
+
+1. Python 环境
+   - 不要把环境建在当前会话工作区内:DSH 沙箱会限制工作区内可执行文件的写权限,工作区内的 python 无法写用户目录。
+   - 推荐位置:%USERPROFILE%\\.dsh\\openjev\\runtime(Windows)或 ~/.dsh/openjev/runtime(macOS/Linux)。
+   - 用 uv 创建独立环境(没有 uv 就先装 uv):uv venv --python 3.12 <runtime-dir>
+   - 安装 PyTorch(按硬件二选一):
+     * CPU(稳妥默认):uv pip install --python <python> torch --index-url https://download.pytorch.org/whl/cpu
+     * NVIDIA 显卡(CUDA 12.8):索引换成 https://download.pytorch.org/whl/cu128
+   - 安装 openjev 服务端:uv pip install --python <python> "openjev[serve] @ git+https://github.com/ejhshen/OpenJev.git"
+     注意:PyPI 上的 openjev 包名被无关项目占用,必须走 git 安装。
+   - 验证:<python> -c "import openjev, fastapi, uvicorn; print('ok')"
+
+2. 模型工件(约 8 GB)
+   - 从 Hugging Face 下载 shenjunhao/OpenJev-4B 的全部文件到 %USERPROFILE%\\.dsh\\openjev\\models\\OpenJev-4B:
+     uv pip install --python <python> huggingface_hub 后用 hf download shenjunhao/OpenJev-4B --local-dir <model-dir>
+   - 下载后校验:目录内必须有 manifest.json 与 COMPLETE;COMPLETE 的内容 == manifest.json 的 sha256(十六进制小写);manifest 列出的每个文件都存在且字节数一致。
+
+3. 自检
+   - 启动服务:<python> -m openjev.runtime.server --artifact <model-dir> --host 127.0.0.1 --port 8080
+   - 轮询 GET http://127.0.0.1:8080/health,返回 {"status":"ready"} 即成功;随后停掉该进程(插件会按需自动拉起)。
+
+4. 收尾
+   - 打开 DSH 设置 → OpenJev 浏览器,填入:Python 路径 = <python 完整路径>,模型目录 = <model-dir>,保存。
+   - 告诉我这两个路径,并说明每一步的结果;任何一步失败请给出原始报错。`
+
+const PROMPT_EN = `Deploy the OpenJev decision-model runtime required by the dsh-openjev-browser plugin, strictly following:
+
+1. Python environment
+   - Do NOT create it inside the current session workspace: the DSH sandbox confines executables living in the workspace to workspace-only writes.
+   - Recommended location: %USERPROFILE%\\.dsh\\openjev\\runtime (Windows) or ~/.dsh/openjev/runtime (macOS/Linux).
+   - Create an isolated env with uv (install uv first if missing): uv venv --python 3.12 <runtime-dir>
+   - Install PyTorch (pick one):
+     * CPU (safe default): uv pip install --python <python> torch --index-url https://download.pytorch.org/whl/cpu
+     * NVIDIA GPU (CUDA 12.8): use index https://download.pytorch.org/whl/cu128
+   - Install the openjev server: uv pip install --python <python> "openjev[serve] @ git+https://github.com/ejhshen/OpenJev.git"
+     Note: the PyPI name "openjev" is squatted by an unrelated project — the git spec is mandatory.
+   - Verify: <python> -c "import openjev, fastapi, uvicorn; print('ok')"
+
+2. Model artifact (~8 GB)
+   - Download all files of HF repo shenjunhao/OpenJev-4B into %USERPROFILE%\\.dsh\\openjev\\models\\OpenJev-4B:
+     install huggingface_hub into the env, then hf download shenjunhao/OpenJev-4B --local-dir <model-dir>
+   - Verify: the dir must contain manifest.json and COMPLETE; COMPLETE == lowercase hex sha256 of manifest.json; every file listed in the manifest exists with the exact byte size.
+
+3. Smoke test
+   - Start: <python> -m openjev.runtime.server --artifact <model-dir> --host 127.0.0.1 --port 8080
+   - Poll GET http://127.0.0.1:8080/health until {"status":"ready"}; then stop the process (the plugin auto-starts it on demand).
+
+4. Finish
+   - Open DSH Settings → OpenJev Browser, fill in Python path = <python> and Model directory = <model-dir>, save.
+   - Report both paths and the outcome of each step; on any failure include the raw error output.`
+
+// ---------------------------------------------------------------------------
 // Locales
 // ---------------------------------------------------------------------------
 
 const zh = {
   'nav.label': 'OpenJev 浏览器',
   'card.status': '运行状态',
+  'card.deploy': '部署指引(Python 环境 + 模型)',
   'card.modelDir': '模型目录',
-  'card.download': '下载模型',
-  'card.runtime': '运行环境(Python)',
   'card.server': '决策服务',
   'field.modelDir': '模型目录',
-  'field.downloadDir': '下载到目录',
-  'field.repo': '模型仓库',
-  'field.runtimeSpec': 'openjev 安装来源',
-  'field.torchIndex': 'PyTorch 版本',
   'field.openjevUrl': '决策服务地址',
   'field.pythonPath': 'Python 路径(可选覆盖)',
   'field.autoStart': '自动启动决策服务',
   'action.refresh': '刷新',
   'action.save': '保存',
   'action.saving': '保存中…',
-  'action.download': '开始下载',
-  'action.cancelDownload': '取消下载',
-  'action.installRuntime': '安装运行时',
-  'action.cancelInstall': '取消安装',
+  'action.copyPrompt': '复制部署提示词',
+  'action.copied': '已复制',
   'action.startServer': '启动服务',
   'action.stopServer': '停止服务',
-  'runtime.missing': '未安装',
-  'runtime.installing': '安装中',
-  'runtime.ready': '已就绪',
-  'runtime.error': '安装失败',
-  'runtime.phase.uv': '下载 uv 环境管理器',
-  'runtime.phase.python': '下载独立 Python 3.12',
-  'runtime.phase.torch': '安装 PyTorch',
-  'runtime.phase.openjev': '安装 openjev 包',
-  'runtime.phase.validate': '验证安装',
-  'hint.runtime': '插件自带的独立 Python 运行环境(uv + Python 3.12 + torch + openjev),安装后无需用户部署任何环境。也可在上方的 Python 路径里指定已有环境覆盖。',
-  'hint.torchCpu': 'CPU 版体积小、最稳;NVIDIA 显卡可选 CUDA 版推理更快(下载多约 2.5 GB)。',
   'status.ready': '决策服务已就绪',
   'status.notReady': '决策服务未就绪',
   'status.model': '模型',
   'status.transport': '接入方式',
-  'status.url': '地址',
   'status.artifactDir': '检测到工件',
   'status.noArtifact': '未检测到模型工件',
   'status.pythonOk': 'Python 可用',
   'status.pythonMissing': 'Python 未就绪',
   'status.notSet': '未设置',
-  'hint.modelDir': '指向已下载的模型目录(OpenJev 工件或含 config.json / *.safetensors 的模型目录),保存后立即生效。',
-  'hint.download': '选择目录下载 OpenJev 模型(约 8 GB,支持断点续传)。下载完成并校验通过后会自动设为模型目录。',
+  'hint.deploy': 'Python 环境与模型由用户自行部署(插件不含运行时与权重)。把下面的提示词粘贴给任意一个 DSH agent 即可自动完成部署;规范细节见仓库 docs/DEPLOYMENT.md。',
+  'hint.modelDir': '指向已部署的模型目录(OpenJev 工件或含 config.json / *.safetensors 的模型目录),保存后立即生效。',
   'hint.server': '决策服务由插件按需自动启动;也可手动控制。修改后保存立即生效。',
   'hint.settingsFile': '设置保存在',
   'hint.restart': '保存后立即生效;重启 DSH 后自动加载。',
-  'download.idle': '暂无下载任务',
-  'download.running': '下载中',
-  'download.done': '下载完成',
-  'download.error': '下载失败',
-  'download.cancelled': '已取消',
-  'download.savedAs': '已自动设为模型目录',
   'message.saved': '已保存并生效',
-  'message.saveFailed': '保存失败',
   'message.loadFailed': '状态加载失败',
-  'setup.title': '未完成初始化',
 }
 
 const en: Record<keyof typeof zh, string> = {
   'nav.label': 'OpenJev Browser',
   'card.status': 'Status',
+  'card.deploy': 'Deployment (Python env + model)',
   'card.modelDir': 'Model Directory',
-  'card.download': 'Download Model',
-  'card.runtime': 'Runtime (Python)',
   'card.server': 'Decision Server',
   'field.modelDir': 'Model directory',
-  'field.downloadDir': 'Download into',
-  'field.repo': 'Model repo',
-  'field.runtimeSpec': 'openjev install source',
-  'field.torchIndex': 'PyTorch build',
   'field.openjevUrl': 'Server URL',
   'field.pythonPath': 'Python path (optional override)',
   'field.autoStart': 'Auto-start decision server',
   'action.refresh': 'Refresh',
   'action.save': 'Save',
   'action.saving': 'Saving…',
-  'action.download': 'Start download',
-  'action.cancelDownload': 'Cancel',
-  'action.installRuntime': 'Install runtime',
-  'action.cancelInstall': 'Cancel install',
+  'action.copyPrompt': 'Copy deployment prompt',
+  'action.copied': 'Copied',
   'action.startServer': 'Start server',
   'action.stopServer': 'Stop server',
-  'runtime.missing': 'Not installed',
-  'runtime.installing': 'Installing',
-  'runtime.ready': 'Ready',
-  'runtime.error': 'Install failed',
-  'runtime.phase.uv': 'Downloading uv',
-  'runtime.phase.python': 'Fetching standalone Python 3.12',
-  'runtime.phase.torch': 'Installing PyTorch',
-  'runtime.phase.openjev': 'Installing openjev package',
-  'runtime.phase.validate': 'Validating install',
-  'hint.runtime': 'A self-contained python managed by the plugin (uv + Python 3.12 + torch + openjev) — no user-side environment setup needed. You can still override with the python path field below.',
-  'hint.torchCpu': 'CPU build is small and reliable; pick a CUDA build for faster inference on NVIDIA GPUs (~2.5 GB larger download).',
   'status.ready': 'Decision server ready',
   'status.notReady': 'Decision server not ready',
   'status.model': 'Model',
   'status.transport': 'Transport',
-  'status.url': 'URL',
   'status.artifactDir': 'Artifact detected',
   'status.noArtifact': 'No model artifact detected',
   'status.pythonOk': 'Python ready',
   'status.pythonMissing': 'Python not ready',
   'status.notSet': 'not set',
-  'hint.modelDir': 'Point at an already-downloaded model (an OpenJev artifact, or a directory with config.json / *.safetensors). Applies immediately on save.',
-  'hint.download': 'Download the OpenJev model (~8 GB, resumable) into a directory of your choice. A validated download is saved as the model directory automatically.',
+  'hint.deploy': 'The python environment and model are user-deployed (the plugin ships neither). Paste the prompt below into any DSH agent to perform the whole deployment; the full spec lives in docs/DEPLOYMENT.md of the plugin repo.',
+  'hint.modelDir': 'Point at an already-deployed model (an OpenJev artifact, or a directory with config.json / *.safetensors). Applies immediately on save.',
   'hint.server': 'The plugin starts the decision server on demand; you can also control it manually. Changes apply on save.',
   'hint.settingsFile': 'Settings stored in',
   'hint.restart': 'Changes apply immediately and are restored after a DSH restart.',
-  'download.idle': 'No download job',
-  'download.running': 'Downloading',
-  'download.done': 'Download complete',
-  'download.error': 'Download failed',
-  'download.cancelled': 'Cancelled',
-  'download.savedAs': 'Saved as model directory',
   'message.saved': 'Saved and applied',
-  'message.saveFailed': 'Save failed',
   'message.loadFailed': 'Failed to load status',
-  'setup.title': 'Setup incomplete',
 }
 
 // ---------------------------------------------------------------------------
@@ -158,44 +160,15 @@ const en: Record<keyof typeof zh, string> = {
 
 type Dict = keyof typeof zh
 
-interface DownloadState {
-  state: 'idle' | 'running' | 'done' | 'error' | 'cancelled'
-  repo?: string
-  dir?: string
-  totalBytes?: number
-  bytesDone?: number
-  file?: string
-  fileIndex?: number
-  fileCount?: number
-  error?: string
-  savedModelDir?: string
-}
-
-interface RuntimeState {
-  state: 'missing' | 'installing' | 'ready' | 'error'
-  dir: string
-  python?: string
-  version?: string
-  phase?: 'uv' | 'python' | 'torch' | 'openjev' | 'validate'
-  log?: string
-  error?: string
-  spec?: string
-  torchIndex?: string
-}
-
 interface StatusPayload {
   settingsFile: string
   config: {
     openjevUrl: string
     modelDir?: string
     pythonPath?: string
-    runtimeDir?: string
-    runtimeSpec: string
-    runtimeTorchIndex: string
     autoStartServer: boolean
     serverPort: number
     modelRepo: string
-    downloadDir: string
     browser: string
     headed: boolean
   }
@@ -203,27 +176,14 @@ interface StatusPayload {
   artifact: { dir?: string; rejected: Record<string, string>; candidates: string[] }
   python: { path?: string; version?: string; hasOpenJev: boolean; error?: string } | null
   setup: string[]
-  runtime: RuntimeState
-  defaults: {
-    downloadDir: string
-    modelRepo: string
-    runtimeDir: string
-    runtimeSpec: string
-    runtimeTorchIndex: string
-    torchIndexes: Record<string, string>
-  }
-  download: DownloadState
+  defaults: { modelDir: string; modelRepo: string }
 }
 
 interface FormState {
   modelDir: string
-  downloadDir: string
-  repo: string
   openjevUrl: string
   pythonPath: string
   autoStartServer: boolean
-  runtimeSpec: string
-  torchIndex: string
 }
 
 interface Snapshot {
@@ -232,6 +192,7 @@ interface Snapshot {
   error: string | null
   notice: string | null
   busy: string | null
+  copied: boolean
   form: FormState
   formTouched: boolean
 }
@@ -264,14 +225,10 @@ class SettingsController {
     error: null,
     notice: null,
     busy: null,
-    form: {
-      modelDir: '', downloadDir: '', repo: '', openjevUrl: '', pythonPath: '',
-      autoStartServer: true, runtimeSpec: '', torchIndex: '',
-    },
+    copied: false,
+    form: { modelDir: '', openjevUrl: '', pythonPath: '', autoStartServer: true },
     formTouched: false,
   })
-
-  private timer: number | undefined
 
   async load(silent = false): Promise<void> {
     if (!silent || this.store.getSnapshot().status !== 'ready') {
@@ -289,83 +246,17 @@ class SettingsController {
         if (!s.formTouched) {
           s.form = {
             modelDir: data.config.modelDir ?? '',
-            downloadDir: data.download.dir ?? (data.config.downloadDir || data.defaults.downloadDir),
-            repo: data.download.repo ?? data.config.modelRepo,
             openjevUrl: data.config.openjevUrl,
             pythonPath: data.config.pythonPath ?? '',
             autoStartServer: data.config.autoStartServer,
-            runtimeSpec: data.config.runtimeSpec || data.defaults.runtimeSpec,
-            torchIndex: data.config.runtimeTorchIndex || data.defaults.runtimeTorchIndex,
           }
         }
       })
-      this.syncPolling(data.download, data.runtime)
     } catch (error) {
       this.store.update((s) => {
         s.status = 'error'
         s.error = messageOf(error)
       })
-    }
-  }
-
-  private syncPolling(download: DownloadState, runtime?: RuntimeState): void {
-    if (download.state === 'running' || runtime?.state === 'installing') this.startPolling()
-    else this.stopPolling()
-  }
-
-  private startPolling(): void {
-    if (this.timer !== undefined) return
-    this.timer = setInterval(() => void this.pollJobs(), 1000) as unknown as number
-  }
-
-  private stopPolling(): void {
-    if (this.timer !== undefined) {
-      clearInterval(this.timer)
-      this.timer = undefined
-    }
-  }
-
-  private async pollJobs(): Promise<void> {
-    try {
-      const current = this.store.getSnapshot().data
-      if (current?.download.state === 'running') {
-        const payload = await callApi('/download')
-        const download = payload.download as DownloadState
-        this.store.update((s) => {
-          if (s.data) s.data.download = download
-        })
-        if (download.state !== 'running') {
-          if (download.state === 'done') {
-            this.store.update((s) => {
-              s.notice = null
-              s.formTouched = false
-            })
-          }
-          await this.load(true)
-          return
-        }
-      }
-      if (current?.runtime.state === 'installing') {
-        const payload = await callApi('/runtime')
-        const runtime = payload.runtime as RuntimeState
-        this.store.update((s) => {
-          if (s.data) s.data.runtime = runtime
-        })
-        if (runtime.state !== 'installing') {
-          this.stopPolling()
-          this.store.update((s) => {
-            s.formTouched = false
-          })
-          await this.load(true)
-          return
-        }
-      }
-      const next = this.store.getSnapshot().data
-      if (next && next.download.state !== 'running' && next.runtime.state !== 'installing') {
-        this.stopPolling()
-      }
-    } catch {
-      this.stopPolling()
     }
   }
 
@@ -377,9 +268,7 @@ class SettingsController {
   }
 
   /** Persist a subset of fields; returns true on success. */
-  async save(
-    fields: Partial<Record<keyof FormState | 'runtimeTorchIndex', string | boolean>>,
-  ): Promise<boolean> {
+  async save(fields: Partial<Record<keyof FormState, string | boolean>>): Promise<boolean> {
     this.store.update((s) => {
       s.busy = 'save'
       s.notice = null
@@ -403,68 +292,17 @@ class SettingsController {
     }
   }
 
-  async startDownload(): Promise<void> {
-    const { downloadDir, repo } = this.store.getSnapshot().form
-    this.store.update((s) => {
-      s.busy = 'download'
-      s.notice = null
-    })
+  async copyPrompt(prompt: string): Promise<void> {
     try {
-      await callApi('/download', { method: 'POST', body: JSON.stringify({ dir: downloadDir, repo }) })
-      await this.load(true)
-    } catch (error) {
+      await navigator.clipboard.writeText(prompt)
       this.store.update((s) => {
-        s.notice = `✗ ${messageOf(error)}`
+        s.copied = true
       })
-    } finally {
-      this.store.update((s) => {
-        s.busy = null
-      })
-    }
-  }
-
-  async cancelDownload(): Promise<void> {
-    try {
-      await callApi('/download/cancel', { method: 'POST' })
-    } catch (error) {
-      this.store.update((s) => {
-        s.notice = `✗ ${messageOf(error)}`
-      })
-    }
-  }
-
-  async installRuntime(): Promise<void> {
-    const { runtimeSpec, torchIndex } = this.store.getSnapshot().form
-    this.store.update((s) => {
-      s.busy = 'runtime'
-      s.notice = null
-    })
-    try {
-      const payload = await callApi('/runtime/install', {
-        method: 'POST',
-        body: JSON.stringify({ spec: runtimeSpec, torchIndex }),
-      })
-      this.store.update((s) => {
-        if (s.data) s.data.runtime = payload.runtime as RuntimeState
-      })
-      this.startPolling()
-    } catch (error) {
-      this.store.update((s) => {
-        s.notice = `✗ ${messageOf(error)}`
-      })
-    } finally {
-      this.store.update((s) => {
-        s.busy = null
-      })
-    }
-  }
-
-  async cancelInstall(): Promise<void> {
-    try {
-      const payload = await callApi('/runtime/cancel', { method: 'POST' })
-      this.store.update((s) => {
-        if (s.data) s.data.runtime = payload.runtime as RuntimeState
-      })
+      setTimeout(() => {
+        this.store.update((s) => {
+          s.copied = false
+        })
+      }, 2000)
     } catch (error) {
       this.store.update((s) => {
         s.notice = `✗ ${messageOf(error)}`
@@ -493,7 +331,7 @@ class SettingsController {
   }
 
   dispose(): void {
-    this.stopPolling()
+    // no timers to stop
   }
 }
 
@@ -516,9 +354,8 @@ const CSS = `
 .ojb-bad { color: var(--dsw-danger, #f85149); }
 .ojb-dim { color: var(--dsw-alias-label-secondary, #888); }
 .ojb-mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; word-break: break-all; }
-.ojb-progress { height: 6px; border-radius: 3px; background: var(--dsw-border, rgba(127,127,127,.3)); overflow: hidden; margin: 8px 0 4px; }
-.ojb-progress > div { height: 100%; background: var(--dsw-accent, #5b8def); transition: width .4s; }
 .ojb-hint { font-size: 12px; color: var(--dsw-alias-label-secondary, #888); margin: 4px 0 0; }
+.ojb-pre { margin: 8px 0 0; padding: 10px; border: 1px solid var(--dsw-border, rgba(127,127,127,.3)); border-radius: 6px; background: var(--dsw-specific-input-major, rgba(127,127,127,.06)); font-family: ui-monospace, Consolas, monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow: auto; }
 `
 
 // ---------------------------------------------------------------------------
@@ -526,18 +363,6 @@ const CSS = `
 // ---------------------------------------------------------------------------
 
 type TFunction = (key: Dict) => string
-
-function formatBytes(n?: number): string {
-  if (!n || n <= 0) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  let value = n
-  let unit = 0
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024
-    unit += 1
-  }
-  return `${value.toFixed(value >= 100 || unit === 0 ? 0 : 1)} ${units[unit]}`
-}
 
 interface SectionProps {
   useOpenjev?: <R>(selector: (s: Snapshot) => R) => R
@@ -551,15 +376,8 @@ function SettingsSection(props: SectionProps) {
   const t = props.t ?? (((key: Dict) => zh[key] ?? key) as TFunction)
   const { data, form } = snapshot
   const busy = snapshot.busy !== null
-
-  const download = data?.download
-  const runtime = data?.runtime
-  const pct =
-    download?.totalBytes && download.bytesDone
-      ? Math.min(100, (download.bytesDone / download.totalBytes) * 100)
-      : undefined
-  const torchIndexes = data?.defaults.torchIndexes ?? {}
-  const torchKnown = Object.values(torchIndexes).includes(form.torchIndex)
+  const isZh = t('nav.label') === zh['nav.label']
+  const prompt = isZh ? PROMPT_ZH : PROMPT_EN
 
   return (
     <div className="ojb-root">
@@ -603,86 +421,16 @@ function SettingsSection(props: SectionProps) {
         </div>
       </div>
 
-      {/* runtime card */}
+      {/* deployment guide card */}
       <div className="ojb-card">
-        <h3>{t('card.runtime')}</h3>
-        {runtime && (
-          <div className="ojb-row">
-            <span
-              className={
-                runtime.state === 'ready' ? 'ojb-ok' : runtime.state === 'missing' ? 'ojb-bad' : ''
-              }
-            >
-              {runtime.state === 'ready'
-                ? `● ${t('runtime.ready')}`
-                : runtime.state === 'missing'
-                  ? `○ ${t('runtime.missing')}`
-                  : runtime.state === 'installing'
-                    ? `◌ ${t('runtime.installing')}`
-                    : `✗ ${t('runtime.error')}`}
-            </span>
-            {runtime.version && <span className="ojb-dim">{`Python ${runtime.version}`}</span>}
-            <span className="ojb-dim ojb-mono">{runtime.dir}</span>
-          </div>
-        )}
-        {runtime?.state === 'installing' && (
-          <>
-            <div className="ojb-progress">
-              <div style={{ width: '100%', opacity: 0.4 }} />
-            </div>
-            <div className="ojb-hint">
-              {runtime.phase ? t(`runtime.phase.${runtime.phase}` as Dict) : ''}
-              {runtime.log ? ` · ${runtime.log}` : ''}
-            </div>
-          </>
-        )}
-        {runtime?.state === 'error' && runtime.error && <div className="ojb-bad">{runtime.error}</div>}
+        <h3>{t('card.deploy')}</h3>
+        <p className="ojb-hint" style={{ marginTop: 0 }}>{t('hint.deploy')}</p>
         <div className="ojb-row">
-          <span className="ojb-label">{t('field.runtimeSpec')}</span>
-          <input
-            className="ojb-input"
-            value={form.runtimeSpec}
-            placeholder={data?.defaults.runtimeSpec}
-            disabled={runtime?.state === 'installing'}
-            onChange={(e) => controllerRef.setForm({ runtimeSpec: e.target.value })}
-          />
+          <button className="ojb-btn ojb-btn-primary" onClick={() => void controllerRef.copyPrompt(prompt)}>
+            {snapshot.copied ? `✓ ${t('action.copied')}` : t('action.copyPrompt')}
+          </button>
         </div>
-        <div className="ojb-row">
-          <span className="ojb-label">{t('field.torchIndex')}</span>
-          <select
-            className="ojb-input"
-            style={{ flex: '0 1 auto', minWidth: 220 }}
-            value={torchKnown ? form.torchIndex : '__custom'}
-            disabled={runtime?.state === 'installing'}
-            onChange={(e) => controllerRef.setForm({ torchIndex: e.target.value })}
-          >
-            {Object.entries(torchIndexes).map(([label, url]) => (
-              <option key={label} value={url}>
-                {label}
-              </option>
-            ))}
-            {!torchKnown && <option value="__custom">{form.torchIndex}</option>}
-          </select>
-          {runtime?.state === 'installing' ? (
-            <button className="ojb-btn" onClick={() => void controllerRef.cancelInstall()}>
-              {t('action.cancelInstall')}
-            </button>
-          ) : (
-            <button
-              className="ojb-btn ojb-btn-primary"
-              disabled={busy || !form.runtimeSpec}
-              onClick={() =>
-                void controllerRef
-                  .save({ runtimeSpec: form.runtimeSpec, runtimeTorchIndex: form.torchIndex })
-                  .then((ok) => ok && controllerRef.installRuntime())
-              }
-            >
-              {t('action.installRuntime')}
-            </button>
-          )}
-        </div>
-        <p className="ojb-hint">{t('hint.runtime')}</p>
-        <p className="ojb-hint">{t('hint.torchCpu')}</p>
+        <pre className="ojb-pre">{prompt}</pre>
       </div>
 
       {/* model dir card */}
@@ -705,69 +453,6 @@ function SettingsSection(props: SectionProps) {
           </button>
         </div>
         <p className="ojb-hint">{t('hint.modelDir')}</p>
-      </div>
-
-      {/* download card */}
-      <div className="ojb-card">
-        <h3>{t('card.download')}</h3>
-        <div className="ojb-row">
-          <span className="ojb-label">{t('field.downloadDir')}</span>
-          <input
-            className="ojb-input"
-            value={form.downloadDir}
-            placeholder={data?.defaults.downloadDir}
-            disabled={download?.state === 'running'}
-            onChange={(e) => controllerRef.setForm({ downloadDir: e.target.value })}
-          />
-        </div>
-        <div className="ojb-row">
-          <span className="ojb-label">{t('field.repo')}</span>
-          <input
-            className="ojb-input"
-            value={form.repo}
-            disabled={download?.state === 'running'}
-            onChange={(e) => controllerRef.setForm({ repo: e.target.value })}
-          />
-          {download?.state === 'running' ? (
-            <button className="ojb-btn" onClick={() => void controllerRef.cancelDownload()}>
-              {t('action.cancelDownload')}
-            </button>
-          ) : (
-            <button
-              className="ojb-btn ojb-btn-primary"
-              disabled={busy || !form.downloadDir}
-              onClick={() => void controllerRef.startDownload()}
-            >
-              {t('action.download')}
-            </button>
-          )}
-        </div>
-        {download && download.state !== 'idle' && (
-          <>
-            <div className="ojb-row">
-              <span className={download.state === 'error' ? 'ojb-bad' : download.state === 'done' ? 'ojb-ok' : ''}>
-                {t(`download.${download.state}` as Dict)}
-              </span>
-              {download.dir && <span className="ojb-dim ojb-mono">{download.dir}</span>}
-            </div>
-            {download.state === 'running' && (
-              <>
-                <div className="ojb-progress">
-                  <div style={{ width: pct === undefined ? '100%' : `${pct}%`, opacity: pct === undefined ? 0.4 : 1 }} />
-                </div>
-                <div className="ojb-hint">
-                  {`${formatBytes(download.bytesDone)}${download.totalBytes ? ` / ${formatBytes(download.totalBytes)}` : ''}`}
-                  {download.file ? ` · ${download.file} (${download.fileIndex}/${download.fileCount})` : ''}
-                </div>
-              </>
-            )}
-            {download.state === 'error' && download.error && <div className="ojb-bad">{download.error}</div>}
-            {download.state === 'done' && download.savedModelDir && (
-              <div className="ojb-ok">{`${t('download.savedAs')}: ${download.savedModelDir}`}</div>
-            )}
-          </>
-        )}
-        <p className="ojb-hint">{t('hint.download')}</p>
       </div>
 
       {/* server card */}

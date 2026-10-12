@@ -2,8 +2,10 @@
  * OpenJev model management: artifact validation, environment detection and a
  * managed decision-server subprocess.
  *
- * The plugin repository ships no model weights. After install, the plugin
- * detects (in order):
+ * The plugin ships no model weights and no python runtime — both are
+ * user-deployed (the settings page carries a copy-paste agent prompt that
+ * performs the whole setup, see docs/DEPLOYMENT.md). After install the
+ * plugin detects (in order):
  *   1. an already-running decision service at `openjevUrl` (GET /health);
  *   2. a local model artifact (config `modelDir`, env vars, conventional
  *      directories) validated against its manifest + COMPLETE marker;
@@ -21,7 +23,7 @@ import { join, resolve } from 'node:path'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 
 import { OpenJevClient } from './openjev.js'
-import { childEnv, managedPythonIfExists, resolveChildTmpDir } from './runtime.js'
+import { childEnv, resolveChildTmpDir } from './runtime.js'
 
 export const DEFAULT_REPO = 'shenjunhao/OpenJev-4B'
 
@@ -83,16 +85,14 @@ export interface ModelConfig {
   openjevUrl: string
   modelDir?: string
   pythonPath?: string
-  /** Managed-runtime venv dir (runtime.ts); probed before PATH pythons. */
-  runtimeDir?: string
   autoStartServer: boolean
   serverPort: number
   serverStartupTimeoutMs: number
   modelRepo: string
-  downloadDir: string
 }
 
-export function defaultDownloadDir(): string {
+/** Conventional artifact location for user-deployed models. */
+export function defaultModelDir(): string {
   return join(homedir(), '.dsh', 'openjev', 'models', 'OpenJev-4B')
 }
 
@@ -105,7 +105,7 @@ export function artifactCandidates(configured?: string): string[] {
     if (value) out.push(value)
   }
   out.push(join(homedir(), '.openjev', 'models', 'OpenJev-4B'))
-  out.push(defaultDownloadDir())
+  out.push(defaultModelDir())
   return [...new Set(out.map((p) => resolve(p)))]
 }
 
@@ -132,10 +132,10 @@ export interface PythonProbe {
  * Probe a python interpreter for the `openjev` package. Synchronous and cheap
  * enough to run lazily (not at plugin load).
  */
-export function probePython(configured?: string, managed?: string): PythonProbe {
+export function probePython(configured?: string): PythonProbe {
   const candidates = configured
     ? [configured]
-    : [managed, process.env.OPENJEV_PYTHON, 'python', 'python3', 'py'].filter(Boolean) as string[]
+    : ([process.env.OPENJEV_PYTHON, 'python', 'python3', 'py'].filter(Boolean) as string[])
   let lastError = 'no python interpreter found on PATH'
   for (const exe of candidates) {
     try {
@@ -251,10 +251,10 @@ export interface ModelStatus {
 /** Human/agent-readable setup instructions for the "no model" state. */
 export function setupGuidance(config: ModelConfig): string[] {
   return [
-    'No OpenJev decision service is available. Pick ONE of:',
-    `1) Point the plugin at a running service: set config "openjevUrl" (current: ${config.openjevUrl}) - or start one with: python -m openjev.runtime.server --artifact <model-dir> --port ${config.serverPort}`,
-    `2) Already have the model files? Set config "modelDir" to the artifact directory (must contain manifest.json + COMPLETE). The plugin auto-starts a server when a python with the openjev package is available ("pythonPath") — or let the plugin bootstrap its own python via the settings page (运行环境 → 安装运行时) / POST /dsh-openjev-browser/api/runtime/install.`,
-    `3) Download the model: node <plugin>/lib/setup.js download --dir <target-dir> (HF repo ${config.modelRepo}, ~8 GB). Default target: ${config.downloadDir}`,
+    'No OpenJev decision service is available. The python environment and model are deployed by the user (not bundled with the plugin). Pick ONE of:',
+    '1) Easiest: open DSH Settings → OpenJev Browser → 部署指引 (Deployment), copy the agent prompt there and send it to any DSH agent — it performs the whole setup (python env + model) and reports back the paths to fill in.',
+    `2) Manual: create a python 3.12 env OUTSIDE the DSH session workspace, install torch + "openjev[serve] @ git+https://github.com/ejhshen/OpenJev.git", download HF repo ${config.modelRepo} (~8 GB), then set "pythonPath" and "modelDir" (artifact must contain manifest.json + COMPLETE). Full spec: <plugin>/docs/DEPLOYMENT.md.`,
+    `3) Already running a service? Set "openjevUrl" (current: ${config.openjevUrl}), or start one with: python -m openjev.runtime.server --artifact <model-dir> --port ${config.serverPort}`,
     'Then call browser_status to re-run detection.',
   ]
 }
@@ -279,7 +279,7 @@ export async function detectStatus(config: ModelConfig): Promise<ModelStatus> {
     return status
   }
   if (artifact.dir && config.autoStartServer) {
-    status.python = probePython(config.pythonPath, managedPythonIfExists(config.runtimeDir))
+    status.python = probePython(config.pythonPath)
     if (status.python.hasOpenJev) {
       status.setup = [
         `Model artifact OK at ${artifact.dir} and python is available; the server will auto-start on the first model-dependent call.`,
@@ -339,7 +339,7 @@ export class ModelManager {
     if (this.config.autoStartServer) {
       const artifact = findArtifact(this.config.modelDir)
       if (artifact.dir) {
-        const python = probePython(this.config.pythonPath, managedPythonIfExists(this.config.runtimeDir))
+        const python = probePython(this.config.pythonPath)
         if (python.hasOpenJev && python.path) {
           const { dispose } = await startServer(
             artifact.dir,

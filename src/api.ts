@@ -5,39 +5,24 @@
  *
  * Endpoints:
  *   GET  /status            detection snapshot: server / artifact / python /
- *                           effective config / settings file / download state
+ *                           effective config / settings file
  *   PUT  /config            persist settings (JSON file) + hot-apply in-process
- *   POST /download          start a model download job  { dir?, repo? }
- *   GET  /download          download job snapshot (polled by the client)
- *   POST /download/cancel   cancel the running job
  *   POST /server/start      start the managed decision server (or attach HTTP)
  *   POST /server/stop       stop the managed decision server
- *   GET  /runtime           managed python runtime snapshot
- *   POST /runtime/install   bootstrap uv + python + torch + openjev
- *                           { spec?, torchIndex? }
- *   POST /runtime/cancel    cancel the running install
+ *
+ * The python environment and model artifact are user-deployed; the settings
+ * page carries a copy-paste agent prompt for that (docs/DEPLOYMENT.md).
  */
 
 import { existsSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
-import { downloadRepo, listRepoFilesWithSizes } from './download.js'
 import {
   artifactCandidates,
-  defaultDownloadDir,
-  findArtifact,
-  probePython,
+  defaultModelDir,
   validateArtifact,
   type ModelManager,
 } from './model.js'
-import {
-  DEFAULT_RUNTIME_SPEC,
-  DEFAULT_TORCH_INDEX,
-  defaultRuntimeDir,
-  TORCH_INDEXES,
-  type RuntimeManager,
-} from './runtime.js'
 import {
   loadSettings,
   saveSettings,
@@ -112,7 +97,7 @@ function isLoopbackRequest(req: IncomingMessage): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Model directory validation for "point at an already-downloaded model".
+// Model directory validation for "point at an already-deployed model".
 // ---------------------------------------------------------------------------
 
 export interface ModelDirCheck {
@@ -157,117 +142,6 @@ export function checkModelDir(dir: string): ModelDirCheck {
 }
 
 // ---------------------------------------------------------------------------
-// Download job (single in-process job; the client polls GET /download).
-// ---------------------------------------------------------------------------
-
-export interface DownloadState {
-  state: 'idle' | 'running' | 'done' | 'error' | 'cancelled'
-  repo?: string
-  dir?: string
-  totalBytes?: number
-  bytesDone?: number
-  file?: string
-  fileIndex?: number
-  fileCount?: number
-  error?: string
-  savedModelDir?: string
-  startedAt?: string
-  finishedAt?: string
-}
-
-class DownloadJob {
-  private state: DownloadState = { state: 'idle' }
-  private abort: AbortController | null = null
-  private running = false
-
-  constructor(
-    private readonly log: Logger,
-    private readonly onDone: (dir: string, repo: string) => Promise<string | undefined>,
-  ) {}
-
-  snapshot(): DownloadState {
-    return { ...this.state }
-  }
-
-  cancel(): DownloadState {
-    if (this.abort) {
-      this.abort.abort()
-      this.log('info', 'dsh-openjev-browser: download cancel requested')
-    }
-    return this.snapshot()
-  }
-
-  async start(dir: string, repo: string): Promise<DownloadState> {
-    if (this.running) throw new RouteError(409, 'DOWNLOAD_RUNNING', '已有下载任务正在进行')
-    this.abort = new AbortController()
-    this.running = true
-    this.state = {
-      state: 'running',
-      repo,
-      dir,
-      bytesDone: 0,
-      startedAt: new Date().toISOString(),
-    }
-    void this.run(dir, repo, this.abort.signal).finally(() => {
-      this.running = false
-    })
-    return this.snapshot()
-  }
-
-  private async run(dir: string, repo: string, signal: AbortSignal): Promise<void> {
-    try {
-      const files = await listRepoFilesWithSizes(repo, signal)
-      const totalBytes = files.reduce((sum, f) => sum + f.size, 0)
-      this.state = { ...this.state, totalBytes: totalBytes > 0 ? totalBytes : undefined, fileCount: files.length }
-      await downloadRepo({
-        repo,
-        dir,
-        files,
-        signal,
-        onProgress: (p) => {
-          this.state = {
-            ...this.state,
-            bytesDone: p.bytesDone,
-            file: p.file,
-            fileIndex: p.fileIndex,
-            fileCount: p.fileCount,
-          }
-        },
-      })
-      const check = validateArtifact(dir)
-      if (!check.ok) {
-        this.state = {
-          ...this.state,
-          state: 'error',
-          error: `下载完成但工件校验失败: ${check.error}`,
-          finishedAt: new Date().toISOString(),
-        }
-        return
-      }
-      const savedModelDir = await this.onDone(dir, repo)
-      this.state = {
-        ...this.state,
-        state: 'done',
-        file: undefined,
-        savedModelDir,
-        finishedAt: new Date().toISOString(),
-      }
-      this.log('info', `dsh-openjev-browser: model downloaded to ${dir}`)
-    } catch (err) {
-      const message = (err as Error).message
-      const cancelled = signal.aborted || /abort/i.test(message)
-      this.state = {
-        ...this.state,
-        state: cancelled ? 'cancelled' : 'error',
-        error: cancelled ? undefined : message,
-        finishedAt: new Date().toISOString(),
-      }
-      if (!cancelled) this.log('warn', `dsh-openjev-browser: download failed: ${message}`)
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Route surface.
 // ---------------------------------------------------------------------------
 
@@ -277,7 +151,6 @@ export interface ApiDeps {
   /** Raw loader config (before the settings file overlay). */
   loaderConfig: unknown
   models: ModelManager
-  runtime: RuntimeManager
   log: Logger
   /** Re-normalize loader config + settings file into the live config object. */
   applySavedSettings: () => void
@@ -310,11 +183,7 @@ function sanitizeSettings(body: Record<string, unknown>, base: SavedSettings): S
   str('modelDir')
   str('pythonPath')
   str('modelRepo')
-  str('downloadDir')
   str('browser')
-  str('runtimeDir')
-  str('runtimeSpec')
-  str('runtimeTorchIndex')
   bool('autoStartServer')
   bool('headed')
   num('serverPort')
@@ -322,15 +191,7 @@ function sanitizeSettings(body: Record<string, unknown>, base: SavedSettings): S
 }
 
 export function createApiHandler(deps: ApiDeps) {
-  const { config, models, runtime, log } = deps
-
-  const job = new DownloadJob(log, async (dir) => {
-    // Download finished and validated: persist modelDir so restarts use it.
-    const saved = sanitizeSettings({ modelDir: dir }, loadSettings())
-    saveSettings(saved)
-    deps.applySavedSettings()
-    return dir
-  })
+  const { config, models, log } = deps
 
   async function statusPayload() {
     const status = await models.status()
@@ -342,13 +203,9 @@ export function createApiHandler(deps: ApiDeps) {
         openjevUrl: config.openjevUrl,
         modelDir: config.modelDir,
         pythonPath: config.pythonPath,
-        runtimeDir: config.runtimeDir,
-        runtimeSpec: config.runtimeSpec,
-        runtimeTorchIndex: config.runtimeTorchIndex,
         autoStartServer: config.autoStartServer,
         serverPort: config.serverPort,
         modelRepo: config.modelRepo,
-        downloadDir: config.downloadDir,
         browser: config.browser,
         headed: config.headed,
       },
@@ -365,16 +222,10 @@ export function createApiHandler(deps: ApiDeps) {
       },
       python: status.python ?? null,
       setup: status.setup,
-      runtime: runtime.snapshot(),
       defaults: {
-        downloadDir: defaultDownloadDir(),
+        modelDir: defaultModelDir(),
         modelRepo: config.modelRepo,
-        runtimeDir: defaultRuntimeDir(),
-        runtimeSpec: DEFAULT_RUNTIME_SPEC,
-        runtimeTorchIndex: DEFAULT_TORCH_INDEX,
-        torchIndexes: TORCH_INDEXES,
       },
-      download: job.snapshot(),
     }
   }
 
@@ -418,29 +269,6 @@ export function createApiHandler(deps: ApiDeps) {
         return
       }
 
-      if (rest === '/download' && req.method === 'GET') {
-        sendJson(res, 200, { ok: true, download: job.snapshot() })
-        return
-      }
-      if (rest === '/download' && req.method === 'POST') {
-        const body = await readJsonBody(req)
-        const dirRaw = typeof body['dir'] === 'string' && body['dir'] ? body['dir'] : config.downloadDir
-        const repo = typeof body['repo'] === 'string' && body['repo'] ? body['repo'] : config.modelRepo
-        const dir = join(dirRaw) // normalize separators
-        if (job.snapshot().state === 'running') {
-          throw new RouteError(409, 'DOWNLOAD_RUNNING', '已有下载任务正在进行')
-        }
-        if (existsSync(dir) && validateArtifact(dir).ok) {
-          throw new RouteError(409, 'ALREADY_COMPLETE', '该目录已包含完整模型工件,可直接设为模型目录')
-        }
-        sendJson(res, 200, { ok: true, download: await job.start(dir, repo) })
-        return
-      }
-      if (rest === '/download/cancel' && req.method === 'POST') {
-        sendJson(res, 200, { ok: true, download: job.cancel() })
-        return
-      }
-
       if (rest === '/server/start' && req.method === 'POST') {
         try {
           await models.ensureClient()
@@ -453,29 +281,6 @@ export function createApiHandler(deps: ApiDeps) {
       if (rest === '/server/stop' && req.method === 'POST') {
         models.dispose()
         sendJson(res, 200, { ok: true, status: await statusPayload() })
-        return
-      }
-
-      if (rest === '/runtime' && req.method === 'GET') {
-        sendJson(res, 200, { ok: true, runtime: runtime.snapshot() })
-        return
-      }
-      if (rest === '/runtime/install' && req.method === 'POST') {
-        const body = await readJsonBody(req)
-        const spec =
-          typeof body['spec'] === 'string' && body['spec'] ? body['spec'] : config.runtimeSpec
-        const torchIndex =
-          typeof body['torchIndex'] === 'string' && body['torchIndex']
-            ? body['torchIndex']
-            : config.runtimeTorchIndex
-        if (runtime.installing) {
-          throw new RouteError(409, 'INSTALL_RUNNING', '已有运行时安装任务正在进行')
-        }
-        sendJson(res, 200, { ok: true, runtime: await runtime.install(spec, torchIndex) })
-        return
-      }
-      if (rest === '/runtime/cancel' && req.method === 'POST') {
-        sendJson(res, 200, { ok: true, runtime: runtime.cancel() })
         return
       }
 

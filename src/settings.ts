@@ -39,12 +39,8 @@ export interface SavedSettings {
   autoStartServer?: boolean
   serverPort?: number
   modelRepo?: string
-  downloadDir?: string
   browser?: string
   headed?: boolean
-  runtimeDir?: string
-  runtimeSpec?: string
-  runtimeTorchIndex?: string
 }
 
 const SAVED_KEYS: (keyof SavedSettings)[] = [
@@ -54,12 +50,8 @@ const SAVED_KEYS: (keyof SavedSettings)[] = [
   'autoStartServer',
   'serverPort',
   'modelRepo',
-  'downloadDir',
   'browser',
   'headed',
-  'runtimeDir',
-  'runtimeSpec',
-  'runtimeTorchIndex',
 ]
 
 /** Read the settings file; missing/corrupt files yield {} (fail soft). */
