@@ -21,6 +21,7 @@ import { join, resolve } from 'node:path'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 
 import { OpenJevClient } from './openjev.js'
+import { childEnv, managedPythonIfExists, resolveChildTmpDir } from './runtime.js'
 
 export const DEFAULT_REPO = 'shenjunhao/OpenJev-4B'
 
@@ -82,6 +83,8 @@ export interface ModelConfig {
   openjevUrl: string
   modelDir?: string
   pythonPath?: string
+  /** Managed-runtime venv dir (runtime.ts); probed before PATH pythons. */
+  runtimeDir?: string
   autoStartServer: boolean
   serverPort: number
   serverStartupTimeoutMs: number
@@ -129,10 +132,10 @@ export interface PythonProbe {
  * Probe a python interpreter for the `openjev` package. Synchronous and cheap
  * enough to run lazily (not at plugin load).
  */
-export function probePython(configured?: string): PythonProbe {
+export function probePython(configured?: string, managed?: string): PythonProbe {
   const candidates = configured
     ? [configured]
-    : [process.env.OPENJEV_PYTHON, 'python', 'python3', 'py'].filter(Boolean) as string[]
+    : [managed, process.env.OPENJEV_PYTHON, 'python', 'python3', 'py'].filter(Boolean) as string[]
   let lastError = 'no python interpreter found on PATH'
   for (const exe of candidates) {
     try {
@@ -190,9 +193,16 @@ export async function startServer(
     '--port', String(port),
   ]
   log('info', `dsh-openjev-browser: starting decision server: ${python} ${args.join(' ')}`)
+  // Redirect TMP/TEMP/TORCHINDUCTOR_CACHE_DIR into a dir the child can
+  // actually write: the host sandbox makes the system temp dir unusable for
+  // spawned children (torch inductor dies with "No usable temporary
+  // directory"), and a python living inside the session workspace is
+  // confined to workspace writes — resolveChildTmpDir probes for that and
+  // falls back to a dir beside the interpreter.
   const child: ChildProcess = spawn(python, args, {
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
+    env: childEnv(undefined, resolveChildTmpDir(python, log)),
   })
   child.stderr?.on('data', (chunk: Buffer) => {
     for (const line of chunk.toString('utf8').split(/\r?\n/)) {
@@ -243,7 +253,7 @@ export function setupGuidance(config: ModelConfig): string[] {
   return [
     'No OpenJev decision service is available. Pick ONE of:',
     `1) Point the plugin at a running service: set config "openjevUrl" (current: ${config.openjevUrl}) - or start one with: python -m openjev.runtime.server --artifact <model-dir> --port ${config.serverPort}`,
-    `2) Already have the model files? Set config "modelDir" to the artifact directory (must contain manifest.json + COMPLETE). The plugin auto-starts a server when a python with the openjev package is available ("pythonPath").`,
+    `2) Already have the model files? Set config "modelDir" to the artifact directory (must contain manifest.json + COMPLETE). The plugin auto-starts a server when a python with the openjev package is available ("pythonPath") — or let the plugin bootstrap its own python via the settings page (运行环境 → 安装运行时) / POST /dsh-openjev-browser/api/runtime/install.`,
     `3) Download the model: node <plugin>/lib/setup.js download --dir <target-dir> (HF repo ${config.modelRepo}, ~8 GB). Default target: ${config.downloadDir}`,
     'Then call browser_status to re-run detection.',
   ]
@@ -269,7 +279,7 @@ export async function detectStatus(config: ModelConfig): Promise<ModelStatus> {
     return status
   }
   if (artifact.dir && config.autoStartServer) {
-    status.python = probePython(config.pythonPath)
+    status.python = probePython(config.pythonPath, managedPythonIfExists(config.runtimeDir))
     if (status.python.hasOpenJev) {
       status.setup = [
         `Model artifact OK at ${artifact.dir} and python is available; the server will auto-start on the first model-dependent call.`,
@@ -329,7 +339,7 @@ export class ModelManager {
     if (this.config.autoStartServer) {
       const artifact = findArtifact(this.config.modelDir)
       if (artifact.dir) {
-        const python = probePython(this.config.pythonPath)
+        const python = probePython(this.config.pythonPath, managedPythonIfExists(this.config.runtimeDir))
         if (python.hasOpenJev && python.path) {
           const { dispose } = await startServer(
             artifact.dir,

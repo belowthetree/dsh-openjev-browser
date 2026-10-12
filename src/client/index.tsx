@@ -33,20 +33,36 @@ const zh = {
   'card.status': '运行状态',
   'card.modelDir': '模型目录',
   'card.download': '下载模型',
+  'card.runtime': '运行环境(Python)',
   'card.server': '决策服务',
   'field.modelDir': '模型目录',
   'field.downloadDir': '下载到目录',
   'field.repo': '模型仓库',
+  'field.runtimeSpec': 'openjev 安装来源',
+  'field.torchIndex': 'PyTorch 版本',
   'field.openjevUrl': '决策服务地址',
-  'field.pythonPath': 'Python 路径',
+  'field.pythonPath': 'Python 路径(可选覆盖)',
   'field.autoStart': '自动启动决策服务',
   'action.refresh': '刷新',
   'action.save': '保存',
   'action.saving': '保存中…',
   'action.download': '开始下载',
   'action.cancelDownload': '取消下载',
+  'action.installRuntime': '安装运行时',
+  'action.cancelInstall': '取消安装',
   'action.startServer': '启动服务',
   'action.stopServer': '停止服务',
+  'runtime.missing': '未安装',
+  'runtime.installing': '安装中',
+  'runtime.ready': '已就绪',
+  'runtime.error': '安装失败',
+  'runtime.phase.uv': '下载 uv 环境管理器',
+  'runtime.phase.python': '下载独立 Python 3.12',
+  'runtime.phase.torch': '安装 PyTorch',
+  'runtime.phase.openjev': '安装 openjev 包',
+  'runtime.phase.validate': '验证安装',
+  'hint.runtime': '插件自带的独立 Python 运行环境(uv + Python 3.12 + torch + openjev),安装后无需用户部署任何环境。也可在上方的 Python 路径里指定已有环境覆盖。',
+  'hint.torchCpu': 'CPU 版体积小、最稳;NVIDIA 显卡可选 CUDA 版推理更快(下载多约 2.5 GB)。',
   'status.ready': '决策服务已就绪',
   'status.notReady': '决策服务未就绪',
   'status.model': '模型',
@@ -79,20 +95,36 @@ const en: Record<keyof typeof zh, string> = {
   'card.status': 'Status',
   'card.modelDir': 'Model Directory',
   'card.download': 'Download Model',
+  'card.runtime': 'Runtime (Python)',
   'card.server': 'Decision Server',
   'field.modelDir': 'Model directory',
   'field.downloadDir': 'Download into',
   'field.repo': 'Model repo',
+  'field.runtimeSpec': 'openjev install source',
+  'field.torchIndex': 'PyTorch build',
   'field.openjevUrl': 'Server URL',
-  'field.pythonPath': 'Python path',
+  'field.pythonPath': 'Python path (optional override)',
   'field.autoStart': 'Auto-start decision server',
   'action.refresh': 'Refresh',
   'action.save': 'Save',
   'action.saving': 'Saving…',
   'action.download': 'Start download',
   'action.cancelDownload': 'Cancel',
+  'action.installRuntime': 'Install runtime',
+  'action.cancelInstall': 'Cancel install',
   'action.startServer': 'Start server',
   'action.stopServer': 'Stop server',
+  'runtime.missing': 'Not installed',
+  'runtime.installing': 'Installing',
+  'runtime.ready': 'Ready',
+  'runtime.error': 'Install failed',
+  'runtime.phase.uv': 'Downloading uv',
+  'runtime.phase.python': 'Fetching standalone Python 3.12',
+  'runtime.phase.torch': 'Installing PyTorch',
+  'runtime.phase.openjev': 'Installing openjev package',
+  'runtime.phase.validate': 'Validating install',
+  'hint.runtime': 'A self-contained python managed by the plugin (uv + Python 3.12 + torch + openjev) — no user-side environment setup needed. You can still override with the python path field below.',
+  'hint.torchCpu': 'CPU build is small and reliable; pick a CUDA build for faster inference on NVIDIA GPUs (~2.5 GB larger download).',
   'status.ready': 'Decision server ready',
   'status.notReady': 'Decision server not ready',
   'status.model': 'Model',
@@ -139,12 +171,27 @@ interface DownloadState {
   savedModelDir?: string
 }
 
+interface RuntimeState {
+  state: 'missing' | 'installing' | 'ready' | 'error'
+  dir: string
+  python?: string
+  version?: string
+  phase?: 'uv' | 'python' | 'torch' | 'openjev' | 'validate'
+  log?: string
+  error?: string
+  spec?: string
+  torchIndex?: string
+}
+
 interface StatusPayload {
   settingsFile: string
   config: {
     openjevUrl: string
     modelDir?: string
     pythonPath?: string
+    runtimeDir?: string
+    runtimeSpec: string
+    runtimeTorchIndex: string
     autoStartServer: boolean
     serverPort: number
     modelRepo: string
@@ -156,7 +203,15 @@ interface StatusPayload {
   artifact: { dir?: string; rejected: Record<string, string>; candidates: string[] }
   python: { path?: string; version?: string; hasOpenJev: boolean; error?: string } | null
   setup: string[]
-  defaults: { downloadDir: string; modelRepo: string }
+  runtime: RuntimeState
+  defaults: {
+    downloadDir: string
+    modelRepo: string
+    runtimeDir: string
+    runtimeSpec: string
+    runtimeTorchIndex: string
+    torchIndexes: Record<string, string>
+  }
   download: DownloadState
 }
 
@@ -167,6 +222,8 @@ interface FormState {
   openjevUrl: string
   pythonPath: string
   autoStartServer: boolean
+  runtimeSpec: string
+  torchIndex: string
 }
 
 interface Snapshot {
@@ -207,7 +264,10 @@ class SettingsController {
     error: null,
     notice: null,
     busy: null,
-    form: { modelDir: '', downloadDir: '', repo: '', openjevUrl: '', pythonPath: '', autoStartServer: true },
+    form: {
+      modelDir: '', downloadDir: '', repo: '', openjevUrl: '', pythonPath: '',
+      autoStartServer: true, runtimeSpec: '', torchIndex: '',
+    },
     formTouched: false,
   })
 
@@ -234,10 +294,12 @@ class SettingsController {
             openjevUrl: data.config.openjevUrl,
             pythonPath: data.config.pythonPath ?? '',
             autoStartServer: data.config.autoStartServer,
+            runtimeSpec: data.config.runtimeSpec || data.defaults.runtimeSpec,
+            torchIndex: data.config.runtimeTorchIndex || data.defaults.runtimeTorchIndex,
           }
         }
       })
-      this.syncPolling(data.download)
+      this.syncPolling(data.download, data.runtime)
     } catch (error) {
       this.store.update((s) => {
         s.status = 'error'
@@ -246,14 +308,14 @@ class SettingsController {
     }
   }
 
-  private syncPolling(download: DownloadState): void {
-    if (download.state === 'running') this.startPolling()
+  private syncPolling(download: DownloadState, runtime?: RuntimeState): void {
+    if (download.state === 'running' || runtime?.state === 'installing') this.startPolling()
     else this.stopPolling()
   }
 
   private startPolling(): void {
     if (this.timer !== undefined) return
-    this.timer = setInterval(() => void this.pollDownload(), 1000) as unknown as number
+    this.timer = setInterval(() => void this.pollJobs(), 1000) as unknown as number
   }
 
   private stopPolling(): void {
@@ -263,23 +325,44 @@ class SettingsController {
     }
   }
 
-  private async pollDownload(): Promise<void> {
+  private async pollJobs(): Promise<void> {
     try {
-      const payload = await callApi('/download')
-      const download = payload.download as DownloadState
-      this.store.update((s) => {
-        if (s.data) s.data.download = download
-      })
-      if (download.state !== 'running') {
-        this.stopPolling()
-        await this.load(true)
-        if (download.state === 'done') {
+      const current = this.store.getSnapshot().data
+      if (current?.download.state === 'running') {
+        const payload = await callApi('/download')
+        const download = payload.download as DownloadState
+        this.store.update((s) => {
+          if (s.data) s.data.download = download
+        })
+        if (download.state !== 'running') {
+          if (download.state === 'done') {
+            this.store.update((s) => {
+              s.notice = null
+              s.formTouched = false
+            })
+          }
+          await this.load(true)
+          return
+        }
+      }
+      if (current?.runtime.state === 'installing') {
+        const payload = await callApi('/runtime')
+        const runtime = payload.runtime as RuntimeState
+        this.store.update((s) => {
+          if (s.data) s.data.runtime = runtime
+        })
+        if (runtime.state !== 'installing') {
+          this.stopPolling()
           this.store.update((s) => {
-            s.notice = null
             s.formTouched = false
           })
           await this.load(true)
+          return
         }
+      }
+      const next = this.store.getSnapshot().data
+      if (next && next.download.state !== 'running' && next.runtime.state !== 'installing') {
+        this.stopPolling()
       }
     } catch {
       this.stopPolling()
@@ -294,7 +377,9 @@ class SettingsController {
   }
 
   /** Persist a subset of fields; returns true on success. */
-  async save(fields: Partial<Record<keyof FormState, string | boolean>>): Promise<boolean> {
+  async save(
+    fields: Partial<Record<keyof FormState | 'runtimeTorchIndex', string | boolean>>,
+  ): Promise<boolean> {
     this.store.update((s) => {
       s.busy = 'save'
       s.notice = null
@@ -341,6 +426,45 @@ class SettingsController {
   async cancelDownload(): Promise<void> {
     try {
       await callApi('/download/cancel', { method: 'POST' })
+    } catch (error) {
+      this.store.update((s) => {
+        s.notice = `✗ ${messageOf(error)}`
+      })
+    }
+  }
+
+  async installRuntime(): Promise<void> {
+    const { runtimeSpec, torchIndex } = this.store.getSnapshot().form
+    this.store.update((s) => {
+      s.busy = 'runtime'
+      s.notice = null
+    })
+    try {
+      const payload = await callApi('/runtime/install', {
+        method: 'POST',
+        body: JSON.stringify({ spec: runtimeSpec, torchIndex }),
+      })
+      this.store.update((s) => {
+        if (s.data) s.data.runtime = payload.runtime as RuntimeState
+      })
+      this.startPolling()
+    } catch (error) {
+      this.store.update((s) => {
+        s.notice = `✗ ${messageOf(error)}`
+      })
+    } finally {
+      this.store.update((s) => {
+        s.busy = null
+      })
+    }
+  }
+
+  async cancelInstall(): Promise<void> {
+    try {
+      const payload = await callApi('/runtime/cancel', { method: 'POST' })
+      this.store.update((s) => {
+        if (s.data) s.data.runtime = payload.runtime as RuntimeState
+      })
     } catch (error) {
       this.store.update((s) => {
         s.notice = `✗ ${messageOf(error)}`
@@ -429,10 +553,13 @@ function SettingsSection(props: SectionProps) {
   const busy = snapshot.busy !== null
 
   const download = data?.download
+  const runtime = data?.runtime
   const pct =
     download?.totalBytes && download.bytesDone
       ? Math.min(100, (download.bytesDone / download.totalBytes) * 100)
       : undefined
+  const torchIndexes = data?.defaults.torchIndexes ?? {}
+  const torchKnown = Object.values(torchIndexes).includes(form.torchIndex)
 
   return (
     <div className="ojb-root">
@@ -474,6 +601,88 @@ function SettingsSection(props: SectionProps) {
             {t('action.refresh')}
           </button>
         </div>
+      </div>
+
+      {/* runtime card */}
+      <div className="ojb-card">
+        <h3>{t('card.runtime')}</h3>
+        {runtime && (
+          <div className="ojb-row">
+            <span
+              className={
+                runtime.state === 'ready' ? 'ojb-ok' : runtime.state === 'missing' ? 'ojb-bad' : ''
+              }
+            >
+              {runtime.state === 'ready'
+                ? `● ${t('runtime.ready')}`
+                : runtime.state === 'missing'
+                  ? `○ ${t('runtime.missing')}`
+                  : runtime.state === 'installing'
+                    ? `◌ ${t('runtime.installing')}`
+                    : `✗ ${t('runtime.error')}`}
+            </span>
+            {runtime.version && <span className="ojb-dim">{`Python ${runtime.version}`}</span>}
+            <span className="ojb-dim ojb-mono">{runtime.dir}</span>
+          </div>
+        )}
+        {runtime?.state === 'installing' && (
+          <>
+            <div className="ojb-progress">
+              <div style={{ width: '100%', opacity: 0.4 }} />
+            </div>
+            <div className="ojb-hint">
+              {runtime.phase ? t(`runtime.phase.${runtime.phase}` as Dict) : ''}
+              {runtime.log ? ` · ${runtime.log}` : ''}
+            </div>
+          </>
+        )}
+        {runtime?.state === 'error' && runtime.error && <div className="ojb-bad">{runtime.error}</div>}
+        <div className="ojb-row">
+          <span className="ojb-label">{t('field.runtimeSpec')}</span>
+          <input
+            className="ojb-input"
+            value={form.runtimeSpec}
+            placeholder={data?.defaults.runtimeSpec}
+            disabled={runtime?.state === 'installing'}
+            onChange={(e) => controllerRef.setForm({ runtimeSpec: e.target.value })}
+          />
+        </div>
+        <div className="ojb-row">
+          <span className="ojb-label">{t('field.torchIndex')}</span>
+          <select
+            className="ojb-input"
+            style={{ flex: '0 1 auto', minWidth: 220 }}
+            value={torchKnown ? form.torchIndex : '__custom'}
+            disabled={runtime?.state === 'installing'}
+            onChange={(e) => controllerRef.setForm({ torchIndex: e.target.value })}
+          >
+            {Object.entries(torchIndexes).map(([label, url]) => (
+              <option key={label} value={url}>
+                {label}
+              </option>
+            ))}
+            {!torchKnown && <option value="__custom">{form.torchIndex}</option>}
+          </select>
+          {runtime?.state === 'installing' ? (
+            <button className="ojb-btn" onClick={() => void controllerRef.cancelInstall()}>
+              {t('action.cancelInstall')}
+            </button>
+          ) : (
+            <button
+              className="ojb-btn ojb-btn-primary"
+              disabled={busy || !form.runtimeSpec}
+              onClick={() =>
+                void controllerRef
+                  .save({ runtimeSpec: form.runtimeSpec, runtimeTorchIndex: form.torchIndex })
+                  .then((ok) => ok && controllerRef.installRuntime())
+              }
+            >
+              {t('action.installRuntime')}
+            </button>
+          )}
+        </div>
+        <p className="ojb-hint">{t('hint.runtime')}</p>
+        <p className="ojb-hint">{t('hint.torchCpu')}</p>
       </div>
 
       {/* model dir card */}

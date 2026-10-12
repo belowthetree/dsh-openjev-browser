@@ -42,6 +42,9 @@ export interface SavedSettings {
   downloadDir?: string
   browser?: string
   headed?: boolean
+  runtimeDir?: string
+  runtimeSpec?: string
+  runtimeTorchIndex?: string
 }
 
 const SAVED_KEYS: (keyof SavedSettings)[] = [
@@ -54,6 +57,9 @@ const SAVED_KEYS: (keyof SavedSettings)[] = [
   'downloadDir',
   'browser',
   'headed',
+  'runtimeDir',
+  'runtimeSpec',
+  'runtimeTorchIndex',
 ]
 
 /** Read the settings file; missing/corrupt files yield {} (fail soft). */
