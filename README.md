@@ -80,6 +80,16 @@ node lib/setup.js print-config    # 输出 cordis.patch.yml 配置片段
 如果 `pythonPath` 指向**会话工作区内**的解释器,沙箱会进一步把它限制为只能写
 工作区,插件会对每个解释器探测一次,不可写时回退到该解释器旁的 `.openjev-tmp/`。
 
+### 服务未开启时会怎样
+
+配置完成后**不需要手动启动服务**:
+
+- **首次调用目标驱动工具时自动拉起**(默认 `autoStartServer: true`)。冷启动约 15–40 秒(权重加载),上限为 `serverStartupTimeoutMs`(默认 240 秒)。
+- 若端口上已有实例正在**加载中**(`/health` 未就绪),插件会等它就绪后接入,不会重复拉起、也不会因端口冲突崩溃;始终等不到时返回明确错误(端口被占用 / 建议改 `serverPort`)。
+- 若服务已在运行(`/health` 返回 ready),直接接入,不产生新进程。
+- `autoStartServer: false` 时插件不会拉起服务:目标驱动工具返回部署指引错误;纯选择器调用(`browser_open`/`browser_close`,以及 click/type/text/scroll/screenshot 的 `selector` 路径)完全不依赖模型,始终可用。
+- 也可以在设置面板点「启动服务」提前预热,省掉第一次调用的等待。
+
 ### 设置面板与优先级
 
 客户端部分注册了一个设置分区(「OpenJev 浏览器」),由仅监听回环地址的 API

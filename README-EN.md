@@ -97,6 +97,26 @@ pointing at an interpreter **inside the session workspace** is additionally
 confined to workspace writes by the sandbox, so the plugin probes each
 interpreter once and falls back to `.openjev-tmp/` beside that interpreter.
 
+### What happens when the service is not running
+
+Once configured you **never start the service by hand**:
+
+- The **first goal-driven tool call starts it on demand** (`autoStartServer: true`
+  by default). A cold start costs ~15–40 s (weight loading), capped by
+  `serverStartupTimeoutMs` (default 240 s).
+- If an instance is already **loading** on the port (`/health` not ready yet),
+  the plugin waits for it and attaches — it neither spawns a duplicate nor dies
+  on a port clash; if it never becomes ready you get an explicit error (port in
+  use / change `serverPort`).
+- If a service is already up (`/health` ready) the plugin attaches to it and
+  spawns nothing.
+- With `autoStartServer: false` nothing is spawned: goal-driven tools return the
+  setup guidance, while selector-based calls (`browser_open`/`browser_close`,
+  and the `selector` path of click/type/text/scroll/screenshot) need no model at
+  all and keep working.
+- You can also press *Start server* on the settings page to pre-warm it and skip
+  the first-call wait.
+
 ### Settings page & precedence
 
 The client half registers a settings section (`OpenJev Browser`) backed by a

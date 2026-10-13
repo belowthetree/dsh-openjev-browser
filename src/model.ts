@@ -18,6 +18,7 @@
 
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, statSync } from 'node:fs'
+import { connect } from 'node:net'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
@@ -237,6 +238,43 @@ export async function startServer(
 // Top-level resolution used by the plugin.
 // ---------------------------------------------------------------------------
 
+/** Quick TCP probe: is anything already listening on host:port? */
+function isPortListening(port: number, host = '127.0.0.1', timeoutMs = 1_500): Promise<boolean> {
+  return new Promise((resolvePromise) => {
+    const socket = connect({ port, host })
+    const settle = (result: boolean) => {
+      socket.destroy()
+      resolvePromise(result)
+    }
+    socket.setTimeout(timeoutMs)
+    socket.once('connect', () => settle(true))
+    socket.once('timeout', () => settle(false))
+    socket.once('error', () => settle(false))
+  })
+}
+
+/** Poll /health until it reports ready, the deadline passes or we abort. */
+async function waitForReady(
+  client: OpenJevClient,
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+  log: Logger,
+): Promise<{ ok: boolean; last?: string }> {
+  const deadline = Date.now() + timeoutMs
+  let last: string | undefined
+  while (Date.now() < deadline) {
+    if (signal?.aborted) return { ok: false, last: 'aborted' }
+    const health = await client.health(2_500)
+    if (health.ok) {
+      log('info', `dsh-openjev-browser: decision service ready (model=${health.model})`)
+      return { ok: true }
+    }
+    last = health.error ?? health.status
+    await new Promise((r) => setTimeout(r, 2_000))
+  }
+  return { ok: false, last }
+}
+
 export interface ModelStatus {
   /** Where decisions will actually come from, once resolved. */
   ready: boolean
@@ -341,16 +379,44 @@ export class ModelManager {
       if (artifact.dir) {
         const python = probePython(this.config.pythonPath)
         if (python.hasOpenJev && python.path) {
-          const { dispose } = await startServer(
-            artifact.dir,
-            python.path,
-            this.config.serverPort,
-            this.config.serverStartupTimeoutMs,
-            this.log,
-            signal,
-          )
-          this.managedDispose = dispose
-          this.client = new OpenJevClient(`http://127.0.0.1:${this.config.serverPort}`)
+          const url = `http://127.0.0.1:${this.config.serverPort}`
+          // Someone else — the user, or a previous plugin instance that outlived
+          // a reload — may already be starting a server on our port: /health is
+          // not ready yet, but the port is bound. Wait for that instance rather
+          // than spawning a second one, which would only die on EADDRINUSE.
+          if (await isPortListening(this.config.serverPort)) {
+            this.log('info', `dsh-openjev-browser: port ${this.config.serverPort} is already bound — waiting for it to become ready`)
+            const waited = await waitForReady(new OpenJevClient(url), this.config.serverStartupTimeoutMs, signal, this.log)
+            if (waited.ok) {
+              this.client = new OpenJevClient(url)
+              return this.client
+            }
+            throw new Error(
+              `port ${this.config.serverPort} is in use but no OpenJev service became ready (${waited.last ?? 'unknown'}); ` +
+                `free the port, change "serverPort", or stop the other process`,
+            )
+          }
+          try {
+            const { dispose } = await startServer(
+              artifact.dir,
+              python.path,
+              this.config.serverPort,
+              this.config.serverStartupTimeoutMs,
+              this.log,
+              signal,
+            )
+            this.managedDispose = dispose
+          } catch (error) {
+            // Lost the port race to an instance that started meanwhile: attach
+            // to it instead of reporting a spawn failure.
+            if (await isPortListening(this.config.serverPort)) {
+              const waited = await waitForReady(new OpenJevClient(url), this.config.serverStartupTimeoutMs, signal, this.log)
+              if (!waited.ok) throw error
+            } else {
+              throw error
+            }
+          }
+          this.client = new OpenJevClient(url)
           return this.client
         }
         this.log('warn', `dsh-openjev-browser: artifact at ${artifact.dir} but no usable python (${python.error})`)
