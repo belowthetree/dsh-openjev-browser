@@ -21,9 +21,10 @@
  * setup.
  */
 
-import { mkdirSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { existsSync, mkdirSync } from 'node:fs'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 
 import { resolveDshHome } from './settings.js'
 
@@ -52,6 +53,33 @@ export function childEnv(extra?: Record<string, string>, tmpDir?: string): NodeJ
     TORCHINDUCTOR_CACHE_DIR: join(tmp, 'torchinductor'),
     ...extra,
   }
+}
+
+/**
+ * Directory holding the bundled `openjev` python package (`<plugin>/python`).
+ * The plugin ships that source tree, so no `pip install openjev` / git install
+ * is needed — only the third-party dependencies (torch, transformers, fastapi,
+ * uvicorn, ...) still come from pip.
+ */
+export function bundledPythonDir(): string {
+  const here = dirname(fileURLToPath(import.meta.url))
+  return resolve(here, '..', 'python')
+}
+
+/** True when this install actually carries the bundled package. */
+export function hasBundledPython(): boolean {
+  return existsSync(join(bundledPythonDir(), 'openjev', '__init__.py'))
+}
+
+/**
+ * Env that puts the bundled package on PYTHONPATH, keeping any pre-existing
+ * entries (a user may point PYTHONPATH at their own checkout).
+ */
+export function pythonPathEnv(extra?: Record<string, string>): Record<string, string> {
+  const dir = bundledPythonDir()
+  const current = process.env.PYTHONPATH
+  const value = current ? `${dir}${delimiter}${current}` : dir
+  return { PYTHONPATH: value, ...extra }
 }
 
 const TMP_PROBE = [

@@ -20,11 +20,11 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { connect } from 'node:net'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join, normalize, resolve } from 'node:path'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 
 import { OpenJevClient } from './openjev.js'
-import { childEnv, resolveChildTmpDir } from './runtime.js'
+import { childEnv, bundledPythonDir, hasBundledPython, pythonPathEnv, resolveChildTmpDir } from './runtime.js'
 
 export const DEFAULT_REPO = 'shenjunhao/OpenJev-4B'
 
@@ -125,32 +125,78 @@ export function findArtifact(configured?: string): { dir?: string; rejected: Rec
 export interface PythonProbe {
   path?: string
   version?: string
+  /** `openjev` resolves (bundled with the plugin or pip-installed). */
   hasOpenJev: boolean
+  /** Import names still missing (torch / fastapi / ...). Empty when usable. */
+  missing: string[]
+  /** True when the interpreter can actually host the decision server. */
+  usable: boolean
+  /** Whether `openjev` came from the tree bundled inside the plugin. */
+  bundled: boolean
   error?: string
 }
 
+/** Modules the decision server imports at runtime (serve extras included). */
+const REQUIRED_MODULES = ['openjev', 'torch', 'transformers', 'safetensors', 'numpy', 'huggingface_hub', 'fastapi', 'uvicorn']
+
+const PYTHON_PROBE = [
+  'import json, sys',
+  'missing = []',
+  `for m in ${JSON.stringify(REQUIRED_MODULES)}:`,
+  '    try:',
+  '        mod = __import__(m)',
+  '    except Exception:',
+  '        missing.append(m)',
+  'print(sys.version.split()[0])',
+  'print(json.dumps(missing))',
+  'try:',
+  '    import openjev',
+  '    print(getattr(openjev, "__file__", "") or "")',
+  'except Exception:',
+  '    print("")',
+].join('\n')
+
 /**
- * Probe a python interpreter for the `openjev` package. Synchronous and cheap
- * enough to run lazily (not at plugin load).
+ * Probe a python interpreter for the `openjev` package and the third-party
+ * modules the server needs. Synchronous and cheap enough to run lazily (not at
+ * plugin load). The bundled package is put on PYTHONPATH, so a bare
+ * interpreter with the pip dependencies is enough.
  */
 export function probePython(configured?: string): PythonProbe {
   const candidates = configured
     ? [configured]
     : ([process.env.OPENJEV_PYTHON, 'python', 'python3', 'py'].filter(Boolean) as string[])
+  const env = { ...process.env, ...pythonPathEnv() }
   let lastError = 'no python interpreter found on PATH'
   for (const exe of candidates) {
     try {
-      const probe = spawnSync(
-        exe,
-        ['-c', 'import sys, openjev; print(sys.version.split()[0]); print(openjev.__file__)'],
-        { encoding: 'utf8', timeout: 30_000, windowsHide: true },
-      )
+      const probe = spawnSync(exe, ['-c', PYTHON_PROBE], {
+        encoding: 'utf8',
+        timeout: 30_000,
+        windowsHide: true,
+        env,
+      })
       if (probe.error) {
         lastError = `${exe}: ${probe.error.message}`
         continue
       }
       if (probe.status === 0) {
-        return { path: exe, version: probe.stdout.trim().split('\n')[0], hasOpenJev: true }
+        const lines = probe.stdout.trim().split('\n')
+        let missing: string[] = []
+        try {
+          missing = JSON.parse(lines[1] ?? '[]')
+        } catch {
+          missing = []
+        }
+        const openjevFile = lines[2] ?? ''
+        return {
+          path: exe,
+          version: lines[0],
+          hasOpenJev: !missing.includes('openjev'),
+          missing,
+          usable: missing.length === 0,
+          bundled: openjevFile !== '' && normalize(openjevFile).startsWith(normalize(bundledPythonDir())),
+        }
       }
       const stderr = (probe.stderr ?? '').trim().split('\n').pop() ?? ''
       lastError = `${exe}: ${stderr || `exit ${probe.status}`}`
@@ -158,7 +204,7 @@ export function probePython(configured?: string): PythonProbe {
       lastError = `${exe}: ${(err as Error).message}`
     }
   }
-  return { hasOpenJev: false, error: lastError }
+  return { hasOpenJev: false, missing: [], usable: false, bundled: false, error: lastError }
 }
 
 // ---------------------------------------------------------------------------
@@ -203,7 +249,7 @@ export async function startServer(
   const child: ChildProcess = spawn(python, args, {
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
-    env: childEnv(undefined, resolveChildTmpDir(python, log)),
+    env: childEnv(pythonPathEnv(), resolveChildTmpDir(python, log)),
   })
   child.stderr?.on('data', (chunk: Buffer) => {
     for (const line of chunk.toString('utf8').split(/\r?\n/)) {
@@ -288,10 +334,11 @@ export interface ModelStatus {
 
 /** Human/agent-readable setup instructions for the "no model" state. */
 export function setupGuidance(config: ModelConfig): string[] {
+  const bundled = hasBundledPython() ? ` (bundled at ${bundledPythonDir()})` : ''
   return [
-    'No OpenJev decision service is available. The python environment and model are deployed by the user (not bundled with the plugin). Pick ONE of:',
-    '1) Easiest: open DSH Settings → OpenJev Browser → 部署指引 (Deployment), copy the agent prompt there and send it to any DSH agent — it performs the whole setup (python env + model) and reports back the paths to fill in.',
-    `2) Manual: create a python 3.12 env OUTSIDE the DSH session workspace, install torch + "openjev[serve] @ git+https://github.com/ejhshen/OpenJev.git", download HF repo ${config.modelRepo} (~8 GB), then set "pythonPath" and "modelDir" (artifact must contain manifest.json + COMPLETE). Full spec: <plugin>/docs/DEPLOYMENT.md.`,
+    `No OpenJev decision service is available. The python SERVER CODE ships with this plugin${bundled}; only the third-party runtime and the ~8 GB model weights are user-provided.`,
+    `1) Open the plugin setup pane ("OpenJev 设置向导", shown on first use) and pick a model source: download the default HF repo ${config.modelRepo} (resumable, ~8 GB) or point at an existing model directory. It writes "modelDir" for you.`,
+    '2) Python runtime: create a python 3.11/3.12 env OUTSIDE the DSH session workspace, then pip install ONLY the dependencies: torch (CPU or CUDA index), transformers==5.12.1, safetensors, numpy, huggingface-hub, plus fastapi + uvicorn for serving. Do NOT pip install openjev from git/pypi — the plugin puts its bundled package on PYTHONPATH. The setup pane reports which modules are missing.',
     `3) Already running a service? Set "openjevUrl" (current: ${config.openjevUrl}), or start one with: python -m openjev.runtime.server --artifact <model-dir> --port ${config.serverPort}`,
     'Then call browser_status to re-run detection.',
   ]
@@ -318,7 +365,7 @@ export async function detectStatus(config: ModelConfig): Promise<ModelStatus> {
   }
   if (artifact.dir && config.autoStartServer) {
     status.python = probePython(config.pythonPath)
-    if (status.python.hasOpenJev) {
+    if (status.python.usable) {
       status.setup = [
         `Model artifact OK at ${artifact.dir} and python is available; the server will auto-start on the first model-dependent call.`,
       ]
@@ -378,7 +425,7 @@ export class ModelManager {
       const artifact = findArtifact(this.config.modelDir)
       if (artifact.dir) {
         const python = probePython(this.config.pythonPath)
-        if (python.hasOpenJev && python.path) {
+        if (python.usable && python.path) {
           const url = `http://127.0.0.1:${this.config.serverPort}`
           // Someone else — the user, or a previous plugin instance that outlived
           // a reload — may already be starting a server on our port: /health is
@@ -419,7 +466,10 @@ export class ModelManager {
           this.client = new OpenJevClient(url)
           return this.client
         }
-        this.log('warn', `dsh-openjev-browser: artifact at ${artifact.dir} but no usable python (${python.error})`)
+        this.log(
+          'warn',
+          `dsh-openjev-browser: artifact at ${artifact.dir} but no usable python (${python.error ?? `missing modules: ${python.missing.join(', ')}`})`,
+        )
       }
     }
     throw new Error(setupGuidance(this.config).join('\n'))

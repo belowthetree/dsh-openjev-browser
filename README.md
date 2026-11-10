@@ -37,6 +37,8 @@ pnpm build     # tsc(宿主侧)+ esbuild(客户端)-> lib/
 
 ## 模型部署
 
+> 插件现在**内置了 `openjev` 的 Python 服务端源码**(`python/openjev/`)。首次启用时插件会弹出自己的设置向导(不是设置页里的卡片):可直接从 HuggingFace 下载模型、指向已有模型目录,或填入已在运行的服务地址;选完写入同一个设置文件并立即生效。Python 侧只需再装第三方依赖(torch / transformers / fastapi / uvicorn),**不再需要 `pip install openjev` 或 git 安装**。
+
 插件**不附带模型权重,也不附带 Python 运行时** —— 两者均由用户自行部署。设置面板(「部署指引」卡片)内置了**可复制的 agent 提示词**:把它粘贴给任意一个 DSH 会话,agent 会自动完成全部部署(Python 环境 + 模型 + 冒烟自检)并回报需要填入的两个路径。底层规范见 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)。
 
 部署完成后,插件按以下顺序检测:

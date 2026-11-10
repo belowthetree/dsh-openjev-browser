@@ -1,4 +1,4 @@
-# 部署指引:Python 环境与模型
+﻿# 部署指引:Python 环境与模型
 
 dsh-openjev-browser 只包含 Node 侧代码(浏览器自动化 + 插件逻辑)。**Python 环境与 OpenJev 模型由用户自行部署**,部署方式有两种:
 
@@ -21,8 +21,8 @@ dsh-openjev-browser 只包含 Node 侧代码(浏览器自动化 + 插件逻辑)�
    - 安装 PyTorch(按硬件二选一):
      * CPU(稳妥默认):uv pip install --python <runtime-dir>\Scripts\python.exe torch --index-url https://download.pytorch.org/whl/cpu
      * NVIDIA 显卡(CUDA 12.8):把索引换成 https://download.pytorch.org/whl/cu128
-   - 安装 openjev 服务端:uv pip install --python <python> "openjev[serve] @ git+https://github.com/ejhshen/OpenJev.git"
-     注意:PyPI 上的 openjev 包名被无关项目占用,必须走 git 安装。
+    - 安装服务端依赖(服务端代码已随插件内置,无需 pip 安装 openjev):uv pip install --python <python> "transformers==5.12.1" safetensors numpy huggingface-hub fastapi uvicorn
+      (PyPI 上的 openjev 包名被无关项目占用,现在已不再需要安装它。)
    - 验证:<python> -c "import openjev, fastapi, uvicorn; print('ok')"
 
 2. 模型工件(约 8 GB)
@@ -50,9 +50,9 @@ dsh-openjev-browser 只包含 Node 侧代码(浏览器自动化 + 插件逻辑)�
 | 项 | 要求 |
 | --- | --- |
 | Python | 3.12(3.10+ 一般可用,3.12 为上游 CI 版本) |
-| 关键包 | `torch`(CPU 或 CUDA 12.8 索引)、`openjev[serve]`(git 安装,含 fastapi/uvicorn) |
+| 关键包 | `torch`(CPU 或 CUDA 12.8 索引)、`transformers==5.12.1`、`fastapi` / `uvicorn`(服务端代码已随插件内置,无需 git 安装 openjev) |
 | 位置 | **必须在 DSH 会话工作区之外**;推荐 `%USERPROFILE%\.dsh\openjev\runtime` |
-| PyPI 注意 | `pip install openjev` 装到的是同名无关包,必须用 `openjev[serve] @ git+https://github.com/ejhshen/OpenJev.git` |
+| 关键包 | `torch`(CPU 或 CUDA 12.8 索引)、`transformers==5.12.1`、`fastapi` / `uvicorn`(服务端代码已随插件内置,无需 git 安装 openjev) |
 
 ### 模型工件格式(artifact_format_version 1)
 

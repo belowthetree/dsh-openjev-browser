@@ -41,6 +41,8 @@ export interface SavedSettings {
   modelRepo?: string
   browser?: string
   headed?: boolean
+  /** Set once the user finished (or dismissed) the first-run setup pane. */
+  onboarded?: boolean
 }
 
 const SAVED_KEYS: (keyof SavedSettings)[] = [
@@ -52,6 +54,7 @@ const SAVED_KEYS: (keyof SavedSettings)[] = [
   'modelRepo',
   'browser',
   'headed',
+  'onboarded',
 ]
 
 /** Read the settings file; missing/corrupt files yield {} (fail soft). */

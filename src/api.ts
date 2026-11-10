@@ -30,6 +30,8 @@ import {
   type SavedSettings,
 } from './settings.js'
 import type { PluginConfig } from './index.js'
+import { bundledPythonDir } from './runtime.js'
+import type { ModelDownloader } from './setup-jobs.js'
 
 export const API_PREFIX = '/dsh-openjev-browser/api'
 
@@ -152,6 +154,8 @@ export interface ApiDeps {
   loaderConfig: unknown
   models: ModelManager
   log: Logger
+  /** Background model download job started from the setup pane. */
+  downloads: ModelDownloader
   /** Re-normalize loader config + settings file into the live config object. */
   applySavedSettings: () => void
 }
@@ -186,12 +190,13 @@ function sanitizeSettings(body: Record<string, unknown>, base: SavedSettings): S
   str('browser')
   bool('autoStartServer')
   bool('headed')
+  bool('onboarded')
   num('serverPort')
   return out
 }
 
 export function createApiHandler(deps: ApiDeps) {
-  const { config, models, log } = deps
+  const { config, models, log, downloads } = deps
 
   async function statusPayload() {
     const status = await models.status()
@@ -222,6 +227,8 @@ export function createApiHandler(deps: ApiDeps) {
       },
       python: status.python ?? null,
       setup: status.setup,
+      download: downloads.snapshot(),
+      bundledPython: bundledPythonDir(),
       defaults: {
         modelDir: defaultModelDir(),
         modelRepo: config.modelRepo,
@@ -281,6 +288,49 @@ export function createApiHandler(deps: ApiDeps) {
       if (rest === '/server/stop' && req.method === 'POST') {
         models.dispose()
         sendJson(res, 200, { ok: true, status: await statusPayload() })
+        return
+      }
+
+      // --- model download (setup pane) -------------------------------------
+      if (rest === '/download' && req.method === 'GET') {
+        sendJson(res, 200, { ok: true, download: downloads.snapshot() })
+        return
+      }
+      if (rest === '/download' && req.method === 'POST') {
+        const body = await readJsonBody(req)
+        const dir = typeof body.dir === 'string' && body.dir.trim() ? body.dir.trim() : defaultModelDir()
+        const repo = typeof body.repo === 'string' && body.repo.trim() ? body.repo.trim() : config.modelRepo
+        try {
+          await downloads.start({ dir, repo })
+        } catch (err) {
+          throw new RouteError(409, 'DOWNLOAD_BUSY', (err as Error).message)
+        }
+        sendJson(res, 200, { ok: true, download: downloads.snapshot() })
+        return
+      }
+      if (rest === '/download/cancel' && req.method === 'POST') {
+        sendJson(res, 200, { ok: true, download: downloads.cancel() })
+        return
+      }
+      if (rest === '/download/adopt' && req.method === 'POST') {
+        // Persist a finished download (or any valid directory) as modelDir.
+        const body = await readJsonBody(req)
+        const dir = typeof body.dir === 'string' && body.dir ? body.dir : downloads.snapshot().dir
+        if (!dir) throw new RouteError(400, 'INVALID_MODEL_DIR', '缺少模型目录')
+        const check = checkModelDir(dir)
+        if (!check.ok) throw new RouteError(400, 'INVALID_MODEL_DIR', check.error ?? '模型目录无效')
+        const saved = sanitizeSettings({ modelDir: dir, onboarded: true }, loadSettings())
+        const file = saveSettings(saved)
+        deps.applySavedSettings()
+        models.dispose()
+        sendJson(res, 200, { ok: true, settingsFile: file, warning: check.warning, status: await statusPayload() })
+        return
+      }
+      if (rest === '/onboarding' && req.method === 'POST') {
+        const body = await readJsonBody(req)
+        const saved = sanitizeSettings({ onboarded: body.done !== false }, loadSettings())
+        const file = saveSettings(saved)
+        sendJson(res, 200, { ok: true, settingsFile: file, saved })
         return
       }
 

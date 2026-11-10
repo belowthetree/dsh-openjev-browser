@@ -160,8 +160,21 @@ const en: Record<keyof typeof zh, string> = {
 
 type Dict = keyof typeof zh
 
+interface DownloadState {
+  status: 'idle' | 'running' | 'done' | 'error' | 'cancelled'
+  dir?: string
+  repo?: string
+  file?: string
+  fileIndex?: number
+  fileCount?: number
+  bytesDone?: number
+  bytesTotal?: number
+  error?: string
+}
+
 interface StatusPayload {
   settingsFile: string
+  saved?: { onboarded?: boolean; modelDir?: string }
   config: {
     openjevUrl: string
     modelDir?: string
@@ -174,8 +187,18 @@ interface StatusPayload {
   }
   server: { ready: boolean; transport?: string; url?: string; model?: string }
   artifact: { dir?: string; rejected: Record<string, string>; candidates: string[] }
-  python: { path?: string; version?: string; hasOpenJev: boolean; error?: string } | null
+  python: {
+    path?: string
+    version?: string
+    hasOpenJev: boolean
+    usable?: boolean
+    missing?: string[]
+    bundled?: boolean
+    error?: string
+  } | null
   setup: string[]
+  download: DownloadState
+  bundledPython: string
   defaults: { modelDir: string; modelRepo: string }
 }
 
@@ -229,6 +252,8 @@ class SettingsController {
     form: { modelDir: '', openjevUrl: '', pythonPath: '', autoStartServer: true },
     formTouched: false,
   })
+
+  private downloadTimer: ReturnType<typeof setInterval> | null = null
 
   async load(silent = false): Promise<void> {
     if (!silent || this.store.getSnapshot().status !== 'ready') {
@@ -331,7 +356,96 @@ class SettingsController {
   }
 
   dispose(): void {
-    // no timers to stop
+    this.stopPolling()
+  }
+
+  // --- model download (plugins page setup panel) ---------------------------
+
+  async startDownload(dir: string, repo: string): Promise<void> {
+    this.store.update((s) => {
+      s.busy = 'download'
+      s.notice = null
+    })
+    try {
+      const payload = await callApi('/download', { method: 'POST', body: JSON.stringify({ dir, repo }) })
+      this.store.update((s) => {
+        s.busy = null
+        if (s.data) s.data = { ...s.data, download: payload.download as DownloadState }
+      })
+      this.pollDownload()
+    } catch (error) {
+      this.store.update((s) => {
+        s.busy = null
+        s.notice = `✗ ${messageOf(error)}`
+      })
+    }
+  }
+
+  async cancelDownload(): Promise<void> {
+    try {
+      const payload = await callApi('/download/cancel', { method: 'POST' })
+      this.store.update((s) => {
+        if (s.data) s.data = { ...s.data, download: payload.download as DownloadState }
+      })
+      this.stopPolling()
+    } catch (error) {
+      this.store.update((s) => {
+        s.notice = `✗ ${messageOf(error)}`
+      })
+    }
+  }
+
+  /** Persist a model directory as modelDir and re-run detection. */
+  async adoptModelDir(dir: string): Promise<boolean> {
+    this.store.update((s) => {
+      s.busy = 'adopt'
+      s.notice = null
+    })
+    try {
+      await callApi('/download/adopt', { method: 'POST', body: JSON.stringify({ dir }) })
+      this.store.update((s) => {
+        s.busy = null
+        s.notice = 'ok'
+        s.formTouched = false
+      })
+      await this.load(true)
+      return true
+    } catch (error) {
+      this.store.update((s) => {
+        s.busy = null
+        s.notice = `✗ ${messageOf(error)}`
+      })
+      return false
+    }
+  }
+
+  pollDownload(): void {
+    if (this.downloadTimer !== null) return
+    this.downloadTimer = setInterval(() => {
+      void this.refreshDownload()
+    }, 1500)
+  }
+
+  stopPolling(): void {
+    if (this.downloadTimer === null) return
+    clearInterval(this.downloadTimer)
+    this.downloadTimer = null
+  }
+
+  private async refreshDownload(): Promise<void> {
+    try {
+      const payload = await callApi('/download')
+      const download = payload.download as DownloadState
+      this.store.update((s) => {
+        if (s.data) s.data = { ...s.data, download }
+      })
+      if (download.status !== 'running') {
+        this.stopPolling()
+        await this.load(true)
+      }
+    } catch {
+      this.stopPolling()
+    }
   }
 }
 
@@ -356,6 +470,11 @@ const CSS = `
 .ojb-mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; word-break: break-all; }
 .ojb-hint { font-size: 12px; color: var(--dsw-alias-label-secondary, #888); margin: 4px 0 0; }
 .ojb-pre { margin: 8px 0 0; padding: 10px; border: 1px solid var(--dsw-border, rgba(127,127,127,.3)); border-radius: 6px; background: var(--dsw-specific-input-major, rgba(127,127,127,.06)); font-family: ui-monospace, Consolas, monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow: auto; }
+.ojb-choice { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 2px; }
+.ojb-choice > button[data-active="true"] { border-color: var(--dsw-accent, #5b8def); }
+.ojb-bar { height: 9px; border-radius: 6px; background: rgba(127,127,127,.22); overflow: hidden; margin: 8px 0 4px; }
+.ojb-bar-fill { height: 100%; background: var(--dsw-accent, #5b8def); transition: width .3s ease; }
+.ojb-stack { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
 `
 
 // ---------------------------------------------------------------------------
@@ -523,6 +642,235 @@ function SettingsSection(props: SectionProps) {
   )
 }
 
+// ---------------------------------------------------------------------------
+// Plugin-page setup panel.
+//
+// Registered on `plugins.bundle.config` / `plugins.bundle.activation`: those are
+// the slots the Plugins page renders inside a plugin's own page (the contract
+// the official voice-input plugin uses), not the generic settings page.
+// ---------------------------------------------------------------------------
+
+function formatBytes(value?: number): string {
+  if (!value || value <= 0) return '—'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let v = value
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${v.toFixed(i === 0 || v >= 10 ? 0 : 1)} ${units[i]}`
+}
+
+function PluginSetupPanel(props: SectionProps) {
+  const useOpenjev = props.useOpenjev
+  const t = props.t ?? (((key: Dict) => zh[key] ?? key) as TFunction)
+  const isZh = t('nav.label') === zh['nav.label']
+  const L = (a: string, b: string): string => (isZh ? a : b)
+
+  const [choice, setChoice] = React.useState<'download' | 'custom' | 'url'>('download')
+  const [dir, setDir] = React.useState('')
+  const [repo, setRepo] = React.useState('')
+  const [customDir, setCustomDir] = React.useState('')
+  const [url, setUrl] = React.useState('')
+  const [cuda, setCuda] = React.useState(false)
+  const [copied, setCopied] = React.useState(false)
+
+  const snapshot = useOpenjev ? useOpenjev((s) => s) : null
+  const data = snapshot?.data ?? null
+  const download = data?.download
+  const busy = snapshot ? snapshot.busy !== null : false
+
+  React.useEffect(() => {
+    void controllerRef.load(true)
+  }, [])
+
+  React.useEffect(() => {
+    if (!data) return
+    setDir((v) => v || data.defaults.modelDir)
+    setRepo((v) => v || data.defaults.modelRepo)
+    setCustomDir((v) => v || data.config.modelDir || '')
+    setUrl((v) => v || data.config.openjevUrl)
+  }, [data?.defaults.modelDir, data?.defaults.modelRepo, data?.config.modelDir, data?.config.openjevUrl])
+
+  if (!useOpenjev) return null
+
+  const controller = controllerRef
+  const running = download?.status === 'running'
+  const done = download?.status === 'done'
+  const pct = download?.bytesTotal ? Math.min(100, Math.round(((download.bytesDone ?? 0) / download.bytesTotal) * 100)) : 0
+  const interpreter = data?.python?.path ?? 'python'
+  const commands = [
+    `"${interpreter}" -m pip install torch --index-url ${cuda ? 'https://download.pytorch.org/whl/cu128' : 'https://download.pytorch.org/whl/cpu'}`,
+    `"${interpreter}" -m pip install "transformers==5.12.1" safetensors numpy huggingface-hub fastapi uvicorn`,
+  ].join('\n')
+
+  return (
+    <div className="ojb-root">
+      <div className="ojb-card">
+        <h3>{L('决策服务', 'Decision service')}</h3>
+        <div className="ojb-row">
+          <span className={data?.server.ready ? 'ojb-ok' : 'ojb-dim'}>
+            {data?.server.ready
+              ? `● ${L('已就绪', 'ready')}`
+              : data?.artifact?.dir && data?.python?.usable
+                ? `○ ${L('模型已就绪，服务未启动', 'model ready, service not started')}`
+                : `○ ${L('未就绪', 'not ready')}`}
+          </span>
+          {data?.server.model && <span className="ojb-dim">{data.server.model}</span>}
+          {data?.artifact?.dir && <span className="ojb-mono ojb-dim">{data.artifact.dir}</span>}
+          {!data?.server.ready && data?.artifact?.dir && data?.python?.usable && (
+            <button className="ojb-btn ojb-btn-primary" disabled={busy} onClick={() => void controller.server('start')}>
+              {L('启动服务', 'Start service')}
+            </button>
+          )}
+          {data?.server.ready && (
+            <button className="ojb-btn" disabled={busy} onClick={() => void controller.server('stop')}>
+              {L('停止服务', 'Stop service')}
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="ojb-card">
+        <h3>{L('模型来源', 'Model source')}</h3>
+        <div className="ojb-choice">
+          <button className="ojb-btn" data-active={choice === 'download'} disabled={running} onClick={() => setChoice('download')}>
+            {L('HuggingFace 下载', 'Download from HF')}
+          </button>
+          <button className="ojb-btn" data-active={choice === 'custom'} disabled={running} onClick={() => setChoice('custom')}>
+            {L('已有模型目录', 'Existing model dir')}
+          </button>
+          <button className="ojb-btn" data-active={choice === 'url'} disabled={running} onClick={() => setChoice('url')}>
+            {L('已有服务', 'Existing service')}
+          </button>
+        </div>
+        {choice === 'download' && (
+          <div className="ojb-stack">
+            <div className="ojb-row">
+              <span className="ojb-label">{L('仓库', 'Repo')}</span>
+              <input className="ojb-input" value={repo} disabled={running} onChange={(e) => setRepo(e.target.value)} />
+            </div>
+            <div className="ojb-row">
+              <span className="ojb-label">{L('保存到', 'Save to')}</span>
+              <input className="ojb-input" value={dir} disabled={running} onChange={(e) => setDir(e.target.value)} />
+            </div>
+            {running && (
+              <>
+                <div className="ojb-bar">
+                  <div className="ojb-bar-fill" style={{ width: `${pct}%` }} />
+                </div>
+                <p className="ojb-hint">
+                  {`${pct}% · ${formatBytes(download?.bytesDone)} / ${formatBytes(download?.bytesTotal)} · ${download?.fileIndex ?? 0}/${download?.fileCount ?? 0}`}
+                </p>
+              </>
+            )}
+            {download?.status === 'error' && <p className="ojb-bad">{`✗ ${download.error ?? ''}`}</p>}
+            {done && <p className="ojb-ok">{L('下载完成并通过工件校验', 'Download finished and validated')}</p>}
+            <div className="ojb-row">
+              {!running && !done && (
+                <button className="ojb-btn ojb-btn-primary" disabled={busy} onClick={() => void controller.startDownload(dir, repo)}>
+                  {L('开始下载', 'Start download')}
+                </button>
+              )}
+              {running && (
+                <button className="ojb-btn" onClick={() => void controller.cancelDownload()}>
+                  {L('取消下载', 'Cancel')}
+                </button>
+              )}
+              {done && (
+                <button className="ojb-btn ojb-btn-primary" disabled={busy} onClick={() => void controller.adoptModelDir(dir)}>
+                  {L('使用这个模型', 'Use this model')}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+        {choice === 'custom' && (
+          <div className="ojb-stack">
+            <div className="ojb-row">
+              <span className="ojb-label">{L('模型目录', 'Model dir')}</span>
+              <input className="ojb-input" value={customDir} onChange={(e) => setCustomDir(e.target.value)} />
+            </div>
+            <div className="ojb-row">
+              <button className="ojb-btn ojb-btn-primary" disabled={busy} onClick={() => void controller.adoptModelDir(customDir)}>
+                {L('校验并保存', 'Validate and save')}
+              </button>
+            </div>
+          </div>
+        )}
+        {choice === 'url' && (
+          <div className="ojb-stack">
+            <div className="ojb-row">
+              <span className="ojb-label">{L('服务地址', 'Service URL')}</span>
+              <input className="ojb-input" value={url} onChange={(e) => setUrl(e.target.value)} />
+            </div>
+            <div className="ojb-row">
+              <button className="ojb-btn ojb-btn-primary" disabled={busy} onClick={() => void controller.save({ openjevUrl: url })}>
+                {L('连接并保存', 'Connect and save')}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {(!data?.python || !data.python.usable) && (
+        <div className="ojb-card">
+          <h3>{L('Python 运行环境（torch 等）', 'Python runtime (torch etc.)')}</h3>
+          <p className="ojb-hint">
+            {data?.python?.path
+              ? `${L('解释器', 'Interpreter')}: ${data.python.path}`
+              : L('未检测到解释器：把下面命令里的 python 换成你的解释器路径', 'No interpreter detected: replace python below with your path')}
+          </p>
+          {data?.python && (data.python.missing ?? []).length > 0 && (
+            <p className="ojb-hint">
+              {L('缺少模块：', 'Missing: ')}
+              <span className="ojb-mono">{(data.python.missing ?? []).join(', ')}</span>
+            </p>
+          )}
+          <div className="ojb-row">
+            <button className="ojb-btn" data-active={!cuda} onClick={() => setCuda(false)}>
+              CPU
+            </button>
+            <button className="ojb-btn" data-active={cuda} onClick={() => setCuda(true)}>
+              CUDA 12.8
+            </button>
+          </div>
+          <pre className="ojb-pre">{commands}</pre>
+          <div className="ojb-row">
+            <button
+              className="ojb-btn"
+              onClick={() => {
+                void navigator.clipboard
+                  .writeText(commands)
+                  .then(() => {
+                    setCopied(true)
+                    setTimeout(() => setCopied(false), 2000)
+                  })
+                  .catch(() => {})
+              }}
+            >
+              {copied ? L('已复制', 'Copied') : L('复制命令', 'Copy commands')}
+            </button>
+          </div>
+          <p className="ojb-hint">
+            {L(
+              '服务端代码已随插件内置，不要 pip 安装 openjev；模型用上面的来源选择处理。',
+              'The server code ships with the plugin — do not pip install openjev.',
+            )}
+          </p>
+        </div>
+      )}
+
+      {snapshot?.notice && (
+        <p className={snapshot.notice.startsWith('✗') ? 'ojb-bad' : 'ojb-ok'}>
+          {snapshot.notice === 'ok' ? `✓ ${L('已保存并通过校验', 'Saved and validated')}` : snapshot.notice}
+        </p>
+      )}
+    </div>
+  )
+}
+
 // The controller is a module-level singleton so both slots (section page and
 // plugin card) share one state source.
 let controllerRef!: SettingsController
@@ -574,4 +922,15 @@ export function apply(ctx: any): void {
   ctx.slots.inject('settings.plugin.item', () =>
     ctx.slots.register({ name: 'settings.plugin.item', key: NS, locale: NS, inject: face }, render),
   )
+
+  // The plugin's own page (插件 → dsh-openjev-browser) renders this panel.
+  // `plugins.bundle.config` is the settings area of that page, `activation`
+  // sits next to the enable toggle — the same contract the official
+  // voice-input plugin uses.
+  const setupRender = (p: SectionProps) => <PluginSetupPanel {...p} t={t} />
+  for (const slot of ['plugins.bundle.config', 'plugins.bundle.activation'] as const) {
+    ctx.slots.inject(slot, () =>
+      ctx.slots.register({ name: slot, key: NS, locale: NS, inject: face }, setupRender),
+    )
+  }
 }

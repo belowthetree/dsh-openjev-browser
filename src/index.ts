@@ -15,6 +15,7 @@ import { buildTools, SessionManager, type PluginDeps } from './tools.js'
 import { ModelManager, type ModelConfig } from './model.js'
 import { mergeWithSettings } from './settings.js'
 import { createApiHandler, API_PREFIX } from './api.js'
+import { ModelDownloader } from './setup-jobs.js'
 
 export const name = 'dsh-openjev-browser'
 export const inject = ['tools']
@@ -101,6 +102,7 @@ export function apply(ctx: Context, rawConfig?: unknown): void {
   }
 
   const models = new ModelManager(config, log)
+  const downloads = new ModelDownloader(log)
   const deps: PluginDeps = { ctx, config, models, log }
   const sessions = new SessionManager(deps)
 
@@ -119,7 +121,7 @@ export function apply(ctx: Context, rawConfig?: unknown): void {
   // profiles). Optional inject keeps headless/tools-only hosts working.
   const registerApi = (webServer: any) => {
     if (!webServer || typeof webServer.register !== 'function') return
-    const handler = createApiHandler({ config, loaderConfig: rawConfig, models, log, applySavedSettings })
+    const handler = createApiHandler({ config, loaderConfig: rawConfig, models, downloads, log, applySavedSettings })
     const register = () => webServer.register({ kind: 'prefix', path: API_PREFIX, handler })
     if (typeof ctx.effect === 'function') ctx.effect(register, 'settings api')
     else register()
