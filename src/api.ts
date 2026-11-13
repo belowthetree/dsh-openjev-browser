@@ -9,6 +9,9 @@
  *   PUT  /config            persist settings (JSON file) + hot-apply in-process
  *   POST /server/start      start the managed decision server (or attach HTTP)
  *   POST /server/stop       stop the managed decision server
+ *   GET  /browser           live browser session status + last tool activity
+ *   POST /browser/capture   force one preview frame capture (floating panel)
+ *   GET  /browser/preview   latest page preview frame (JPEG/PNG bytes)
  *
  * The python environment and model artifact are user-deployed; the settings
  * page carries a copy-paste agent prompt for that (docs/DEPLOYMENT.md).
@@ -32,6 +35,7 @@ import {
 import type { PluginConfig } from './index.js'
 import { bundledPythonDir } from './runtime.js'
 import type { ModelDownloader } from './setup-jobs.js'
+import type { SessionManager } from './tools.js'
 
 export const API_PREFIX = '/dsh-openjev-browser/api'
 
@@ -156,6 +160,8 @@ export interface ApiDeps {
   log: Logger
   /** Background model download job started from the setup pane. */
   downloads: ModelDownloader
+  /** Live browser session behind the tools (floating panel status). */
+  sessions: SessionManager
   /** Re-normalize loader config + settings file into the live config object. */
   applySavedSettings: () => void
 }
@@ -288,6 +294,31 @@ export function createApiHandler(deps: ApiDeps) {
       if (rest === '/server/stop' && req.method === 'POST') {
         models.dispose()
         sendJson(res, 200, { ok: true, status: await statusPayload() })
+        return
+      }
+
+      // --- live browser session (floating panel) ----------------------------
+      if (rest === '/browser' && req.method === 'GET') {
+        sendJson(res, 200, { ok: true, browser: await deps.sessions.snapshot() })
+        return
+      }
+      if (rest === '/browser/capture' && req.method === 'POST') {
+        await deps.sessions.capture()
+        sendJson(res, 200, { ok: true, browser: await deps.sessions.snapshot() })
+        return
+      }
+      if (rest === '/browser/preview' && req.method === 'GET') {
+        const frame = deps.sessions.preview()
+        if (!frame) {
+          sendJson(res, 404, { ok: false, code: 'NO_PREVIEW', message: '还没有页面预览' })
+          return
+        }
+        res.statusCode = 200
+        res.setHeader('content-type', frame.format === 'png' ? 'image/png' : 'image/jpeg')
+        res.setHeader('cache-control', 'no-store, max-age=0')
+        res.setHeader('content-length', String(frame.data.length))
+        res.setHeader('x-preview-seq', String(frame.seq))
+        res.end(frame.data)
         return
       }
 

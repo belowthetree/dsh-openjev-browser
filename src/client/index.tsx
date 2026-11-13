@@ -117,6 +117,22 @@ const zh = {
   'hint.restart': '保存后立即生效;重启 DSH 后自动加载。',
   'message.saved': '已保存并生效',
   'message.loadFailed': '状态加载失败',
+  'float.title': '浏览器预览',
+  'float.show': '显示浏览器预览',
+  'float.expand': '放大预览',
+  'float.shrink': '缩小预览',
+  'float.close': '收起预览',
+  'float.refresh': '刷新画面',
+  'float.waiting': '正在获取页面…',
+  'float.idle': '等待操作',
+  'float.running': '执行中',
+  'float.done': '完成',
+  'float.failed': '失败',
+  'float.untitled': '无标题页面',
+  'float.previewUnavailable': '暂时无法获取画面',
+  'float.captureHint': '画面在浏览器工具执行后自动更新',
+  'float.headed': '有头',
+  'float.headless': '无头',
 }
 
 const en: Record<keyof typeof zh, string> = {
@@ -152,6 +168,22 @@ const en: Record<keyof typeof zh, string> = {
   'hint.restart': 'Changes apply immediately and are restored after a DSH restart.',
   'message.saved': 'Saved and applied',
   'message.loadFailed': 'Failed to load status',
+  'float.title': 'Browser preview',
+  'float.show': 'Show browser preview',
+  'float.expand': 'Enlarge preview',
+  'float.shrink': 'Shrink preview',
+  'float.close': 'Hide preview',
+  'float.refresh': 'Refresh frame',
+  'float.waiting': 'Loading page…',
+  'float.idle': 'waiting for a tool call',
+  'float.running': 'running',
+  'float.done': 'done',
+  'float.failed': 'failed',
+  'float.untitled': 'Untitled page',
+  'float.previewUnavailable': 'Preview unavailable',
+  'float.captureHint': 'The frame refreshes after each browser tool call',
+  'float.headed': 'headed',
+  'float.headless': 'headless',
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +507,42 @@ const CSS = `
 .ojb-bar { height: 9px; border-radius: 6px; background: rgba(127,127,127,.22); overflow: hidden; margin: 8px 0 4px; }
 .ojb-bar-fill { height: 100%; background: var(--dsw-accent, #5b8def); transition: width .3s ease; }
 .ojb-stack { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.ojb-float { position: fixed; z-index: 2150; display: flex; flex-direction: column; border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.35)); border-radius: 12px; background: var(--dsw-alias-bg-overlay, #1f1f1f); color: var(--dsw-alias-label-primary, #e6e6e6); box-shadow: 0 14px 36px rgba(0,0,0,.36); font-size: 12px; overflow: hidden; }
+.ojb-float-pop { animation: ojb-float-pop .24s cubic-bezier(.2,.9,.3,1.18); }
+@keyframes ojb-float-pop { from { opacity: 0; transform: translateY(8px) scale(.965); } to { opacity: 1; transform: none; } }
+.ojb-float-head { display: flex; align-items: center; gap: 6px; padding: 7px 8px; cursor: grab; background: var(--dsw-alias-bg-layer-1, rgba(127,127,127,.08)); border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.2)); user-select: none; touch-action: none; }
+.ojb-float-head:active { cursor: grabbing; }
+.ojb-float-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dsw-alias-state-success-primary, #3fb950); flex: none; }
+.ojb-float-dot-busy { background: var(--dsw-alias-state-warn-primary, #d29922); animation: ojb-pulse 1s ease-in-out infinite; }
+.ojb-float-dot-bad { background: var(--dsw-alias-state-error-primary, #f85149); }
+@keyframes ojb-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.ojb-float-title { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ojb-float-btn { flex: none; border: 0; background: transparent; color: var(--dsw-alias-label-secondary, #999); font: inherit; font-size: 14px; line-height: 1; cursor: pointer; padding: 3px 5px; border-radius: 5px; }
+.ojb-float-btn:hover { color: var(--dsw-alias-label-primary, #eee); background: var(--dsw-alias-bg-layer-2, rgba(127,127,127,.14)); }
+.ojb-float-body { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px 10px; }
+.ojb-float-shot { position: relative; border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.25)); border-radius: 8px; overflow: hidden; background: var(--dsw-alias-bg-base, #111); cursor: zoom-in; }
+.ojb-float-shot img { display: block; width: 100%; height: auto; max-height: 190px; object-fit: contain; }
+.ojb-float-shot-large img { max-height: 58vh; }
+.ojb-float-shot-empty { display: flex; align-items: center; justify-content: center; gap: 8px; height: 150px; color: var(--dsw-alias-label-secondary, #999); cursor: default; }
+.ojb-float-shot-large .ojb-float-shot-empty { height: 260px; }
+.ojb-float-spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--dsw-alias-border-l2, rgba(127,127,127,.4)); border-top-color: var(--dsw-alias-brand-primary, #5b8def); animation: ojb-spin .8s linear infinite; }
+@keyframes ojb-spin { to { transform: rotate(360deg); } }
+.ojb-float-badge { position: absolute; top: 6px; left: 6px; right: 6px; display: flex; align-items: center; gap: 5px; min-width: 0; padding: 2px 7px; border-radius: 999px; background: rgba(0,0,0,.62); color: #fff; font-size: 11px; line-height: 1.5; }
+.ojb-float-badge.is-bad { background: rgba(150,30,30,.78); }
+.ojb-float-badge-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ojb-float-badge-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--dsw-alias-state-warn-primary, #d29922); animation: ojb-pulse 1s ease-in-out infinite; }
+.ojb-float-line { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.ojb-float-page-title { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ojb-float-url { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: var(--dsw-alias-label-secondary, #999); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ojb-float-error { color: var(--dsw-alias-state-error-primary, #f85149); font-size: 11px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ojb-float-meta { display: flex; align-items: center; gap: 8px; color: var(--dsw-alias-label-secondary, #999); font-size: 11px; }
+.ojb-float-meta > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ojb-float-spacer { flex: 1; }
+.ojb-float-tab { position: fixed; right: 0; top: 38%; z-index: 2150; display: flex; flex-direction: column; align-items: center; gap: 4px; width: 40px; padding: 6px 5px; border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.35)); border-right: 0; border-radius: 10px 0 0 10px; background: var(--dsw-alias-bg-overlay, #1f1f1f); color: var(--dsw-alias-label-secondary, #999); cursor: pointer; box-shadow: -2px 0 10px rgba(0,0,0,.22); }
+.ojb-float-tab:hover { color: var(--dsw-alias-label-primary, #eee); }
+.ojb-float-tab img { display: block; width: 100%; border-radius: 5px; border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.25)); }
+.ojb-float-tab-glyph { font-size: 14px; }
+@media (prefers-reduced-motion: reduce) { .ojb-float-pop, .ojb-float-dot-busy, .ojb-float-badge-dot, .ojb-float-spinner { animation: none; } }
 `
 
 // ---------------------------------------------------------------------------
@@ -871,6 +939,505 @@ function PluginSetupPanel(props: SectionProps) {
   )
 }
 
+// ---------------------------------------------------------------------------
+// Floating browser preview (`shell.overlay`).
+//
+// Pops up when a browser tool is called and shows what the plugin's browser is
+// displaying right now: the latest page frame, title, URL and the tool that
+// just ran. The frame is captured host-side and never enters the model
+// context. Drag the header to move it (position is remembered), double-click
+// the header or the frame to switch compact/large, × hides it behind a slim
+// thumbnail tab until the next browser tool call.
+// ---------------------------------------------------------------------------
+
+interface BrowserPreviewInfo {
+  seq: number
+  at: number
+  width: number
+  height: number
+  bytes: number
+  format?: 'jpeg' | 'png'
+}
+
+interface BrowserActivity {
+  tool: string
+  phase: 'running' | 'done'
+  ok?: boolean
+  summary?: string
+  detail?: string
+  at: number
+  rev: number
+}
+
+interface BrowserSnapshot {
+  open: boolean
+  browser?: { requested?: string; channel?: string; version?: string | null; user_data_dir?: string | null }
+  page?: { url?: string; title?: string }
+  headed?: boolean
+  viewport?: [number, number]
+  busy?: boolean
+  running?: boolean
+  activity?: BrowserActivity | null
+  preview?: BrowserPreviewInfo | null
+}
+
+const FLOAT_POS_KEY = 'dsh.openjev.browserFloat.pos'
+const FLOAT_SIZE_KEY = 'dsh.openjev.browserFloat.size'
+const FLOAT_WIDTH = 320
+const FLOAT_WIDTH_LARGE = 560
+const POLL_OPEN_MS = 1500
+const POLL_IDLE_MS = 3000
+const POLL_BACKGROUND_MS = 5000
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), Math.max(min, max))
+}
+
+function readFloatPos(): { x: number; y: number } | null {
+  try {
+    const raw = localStorage.getItem(FLOAT_POS_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { x?: number; y?: number }
+    if (typeof parsed?.x === 'number' && typeof parsed?.y === 'number') return { x: parsed.x, y: parsed.y }
+  } catch {
+    // private mode / quota — fall back to the default corner
+  }
+  return null
+}
+
+function readFloatLarge(): boolean {
+  try {
+    return localStorage.getItem(FLOAT_SIZE_KEY) === 'large'
+  } catch {
+    return false
+  }
+}
+
+function persistFloat(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    // ignore
+  }
+}
+
+async function fetchBrowser(): Promise<BrowserSnapshot> {
+  const response = await fetch(`${API}/browser`, { headers: { accept: 'application/json' } })
+  const payload = (await response.json()) as { ok?: boolean; browser?: BrowserSnapshot }
+  if (!response.ok || !payload?.ok || !payload.browser) throw new Error(`HTTP ${response.status}`)
+  return payload.browser
+}
+
+async function captureBrowser(): Promise<BrowserSnapshot | null> {
+  const response = await fetch(`${API}/browser/capture`, { method: 'POST', headers: { accept: 'application/json' } })
+  const payload = (await response.json()) as { ok?: boolean; browser?: BrowserSnapshot }
+  return response.ok && payload?.ok && payload.browser ? payload.browser : null
+}
+
+function BrowserFloat(props: SectionProps) {
+  const t = props.t ?? (((key: Dict) => zh[key] ?? key) as TFunction)
+
+  const [snap, setSnap] = React.useState<BrowserSnapshot | null>(null)
+  const [hidden, setHidden] = React.useState(false)
+  const [large, setLarge] = React.useState(() => readFloatLarge())
+  const [pos, setPos] = React.useState<{ x: number; y: number } | null>(() => readFloatPos())
+  const [flash, setFlash] = React.useState(0)
+  const [imgUrl, setImgUrl] = React.useState<string | null>(null)
+  const [imgFailed, setImgFailed] = React.useState(false)
+  const [waitExpired, setWaitExpired] = React.useState(false)
+  const [win, setWin] = React.useState(() => ({
+    width: typeof window === 'undefined' ? 1280 : window.innerWidth,
+    height: typeof window === 'undefined' ? 800 : window.innerHeight,
+  }))
+
+  const box = React.useRef<HTMLDivElement | null>(null)
+  const drag = React.useRef<{ dx: number; dy: number } | null>(null)
+  const hiddenRef = React.useRef(false)
+  const frameUrlRef = React.useRef<string | null>(null)
+  const loadedSeqRef = React.useRef(-1)
+
+  // Fetch a frame with `fetch` and hand React an object URL, so preview bytes
+  // ride the same authenticated request path as the JSON API instead of an
+  // <img> request that cannot carry request headers.
+  const loadFrame = React.useCallback(async (seq: number): Promise<void> => {
+    if (seq <= 0 || seq === loadedSeqRef.current) return
+    loadedSeqRef.current = seq
+    try {
+      const response = await fetch(`${API}/browser/preview?seq=${seq}`, { headers: { accept: 'image/*' } })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const blob = await response.blob()
+      // A newer frame may have been requested while this one was in flight;
+      // the newest sequence always wins.
+      if (loadedSeqRef.current !== seq) return
+      const url = URL.createObjectURL(blob)
+      const previous = frameUrlRef.current
+      frameUrlRef.current = url
+      setImgUrl(url)
+      setImgFailed(false)
+      if (previous) URL.revokeObjectURL(previous)
+    } catch {
+      if (loadedSeqRef.current === seq) {
+        loadedSeqRef.current = -1
+        setImgFailed(true)
+      }
+    }
+  }, [])
+
+  React.useEffect(
+    () => () => {
+      if (frameUrlRef.current) URL.revokeObjectURL(frameUrlRef.current)
+      frameUrlRef.current = null
+    },
+    [],
+  )
+
+  const syncFrame = (next: BrowserSnapshot | null): void => {
+    if (!next?.preview) return
+    void loadFrame(next.preview.seq)
+  }
+
+  const captureNow = React.useCallback(async (): Promise<void> => {
+    const captured = await captureBrowser().catch(() => null)
+    if (!captured) return
+    setSnap(captured)
+    if (captured.preview) void loadFrame(captured.preview.seq)
+  }, [loadFrame])
+
+  React.useEffect(() => {
+    hiddenRef.current = hidden
+  }, [hidden])
+
+  React.useEffect(() => {
+    const onResize = (): void => setWin({ width: window.innerWidth, height: window.innerHeight })
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  // Surface a stuck loading state instead of spinning forever when the host
+  // cannot produce a frame for this page.
+  React.useEffect(() => {
+    if (!snap?.open || snap.preview || imgUrl) {
+      setWaitExpired(false)
+      return
+    }
+    const timer = setTimeout(() => setWaitExpired(true), 8000)
+    return () => clearTimeout(timer)
+  }, [snap?.open, snap?.preview?.seq, imgUrl])
+
+  // Keep the window inside the viewport after a size toggle, a window resize
+  // or a frame that changes the panel's height.
+  React.useEffect(() => {
+    if (!snap?.open || hidden) return
+    const rect = box.current?.getBoundingClientRect()
+    if (!rect) return
+    setPos((current) => {
+      if (!current) return current
+      const x = clamp(current.x, 4, win.width - rect.width - 4)
+      const y = clamp(current.y, 4, win.height - rect.height - 4)
+      return x === current.x && y === current.y ? current : { x, y }
+    })
+  }, [large, win.width, win.height, snap?.open, hidden, imgUrl])
+
+  // Status polling + live frame capture in one loop: read the session state,
+  // pop the panel when a browser tool revision appears, then (only while the
+  // panel is visible) ask the host for a fresh frame. A hidden panel or a
+  // background tab captures less often and never on a closed session.
+  React.useEffect(() => {
+    let alive = true
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let busy = false
+    let initialized = false
+    let wasOpen = false
+    let lastRev = 0
+    let lastCapture = 0
+    let failures = 0
+    let refreshOnce = false
+
+    const schedule = (ms: number): void => {
+      if (alive) timer = setTimeout(() => void run(), ms)
+    }
+
+    const run = async (): Promise<void> => {
+      if (busy) {
+        schedule(600)
+        return
+      }
+      busy = true
+      let next: BrowserSnapshot | null = null
+      try {
+        next = await fetchBrowser()
+      } catch {
+        failures += 1
+        busy = false
+        schedule(Math.min(2500 * failures, 15_000))
+        return
+      }
+      failures = 0
+      if (!alive) {
+        busy = false
+        return
+      }
+
+      const rev = next.activity?.rev ?? 0
+      const age = next.activity ? Date.now() - next.activity.at : Number.POSITIVE_INFINITY
+      const recent = age < 12_000
+      const followUp = age < 6_000
+      const opened = initialized && next.open && !wasOpen
+      const triggered = initialized
+        ? opened || (next.open && recent && rev !== lastRev)
+        : next.open && recent
+      if (triggered) {
+        const wasHidden = hiddenRef.current
+        setHidden(false)
+        // Pop only when the window appears or comes back; while it is already
+        // open, the activity badge and frame update carry the feedback. This
+        // keeps the animation from replaying on every tool of a long run.
+        if (wasHidden || !wasOpen || !initialized) setFlash((value) => value + 1)
+        lastCapture = 0 // fresh frame for the new page state
+      }
+      if (!next.open) {
+        // A closed session invalidates the frame; a later open starts a new
+        // sequence and must always load.
+        loadedSeqRef.current = -1
+        const stale = frameUrlRef.current
+        frameUrlRef.current = null
+        setImgUrl(null)
+        if (stale) URL.revokeObjectURL(stale)
+      }
+      if (next.open) lastRev = rev
+      wasOpen = next.open
+      initialized = true
+      setSnap(next)
+      syncFrame(next)
+
+      const background = document.visibilityState === 'hidden'
+      // A trigger already unhid the panel in this tick; hiddenRef only flips
+      // after the next render, so account for the trigger explicitly.
+      const visible = next.open && (!hiddenRef.current || triggered) && !background
+      // Capture on tool activity, for a few seconds afterwards (async
+      // navigations often finish after the tool returns), when the panel
+      // appears, or when the tab came back to the front. An idle page is not
+      // re-captured for nothing; the refresh button still forces a frame.
+      const wantsFrame = triggered || followUp || refreshOnce
+      if (visible && wantsFrame && Date.now() - lastCapture >= (triggered ? 300 : 1500)) {
+        const captured = await captureBrowser().catch(() => null)
+        if (!alive) {
+          busy = false
+          return
+        }
+        if (captured) {
+          lastCapture = Date.now()
+          refreshOnce = false
+          setSnap(captured)
+          syncFrame(captured)
+        }
+      }
+      busy = false
+      schedule(background ? POLL_BACKGROUND_MS : visible ? POLL_OPEN_MS : POLL_IDLE_MS)
+    }
+
+    schedule(0)
+    const onVisibility = (): void => {
+      if (document.visibilityState !== 'visible') return
+      refreshOnce = true
+      if (timer !== null) {
+        clearTimeout(timer)
+        timer = null
+      }
+      if (!busy) void run()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      alive = false
+      document.removeEventListener('visibilitychange', onVisibility)
+      if (timer !== null) clearTimeout(timer)
+    }
+  }, [])
+
+  React.useEffect(() => {
+    const move = (event: PointerEvent): void => {
+      const current = drag.current
+      if (!current) return
+      const rect = box.current?.getBoundingClientRect()
+      const panelWidth = rect?.width ?? FLOAT_WIDTH
+      const panelHeight = rect?.height ?? 120
+      setPos({
+        x: clamp(event.clientX - current.dx, 4, window.innerWidth - panelWidth - 4),
+        y: clamp(event.clientY - current.dy, 4, window.innerHeight - panelHeight - 4),
+      })
+    }
+    const up = (): void => {
+      if (!drag.current) return
+      drag.current = null
+      setPos((current) => {
+        if (current) persistFloat(FLOAT_POS_KEY, JSON.stringify(current))
+        return current
+      })
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', up)
+    return () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', up)
+    }
+  }, [])
+
+  if (!snap?.open) return null
+
+  const page = snap.page ?? {}
+  const browser = snap.browser ?? {}
+  const activity = snap.activity ?? null
+  const running = snap.running === true || snap.busy === true || activity?.phase === 'running'
+  const failed = !running && activity?.phase === 'done' && activity.ok === false
+  const preview = snap.preview ?? null
+  const widthPx = large ? Math.max(280, Math.min(FLOAT_WIDTH_LARGE, win.width - 24)) : FLOAT_WIDTH
+  const fallback = { x: Math.max(8, win.width - widthPx - 18), y: 96 }
+  const at = pos
+    ? { x: clamp(pos.x, 4, win.width - widthPx - 4), y: clamp(pos.y, 4, win.height - 92) }
+    : fallback
+  const imageSrc = imgUrl && !imgFailed ? imgUrl : null
+  const thumbSrc = imageSrc
+  const noFrame = imgFailed || waitExpired
+
+  const describe = (value: BrowserActivity): string => {
+    const tool = value.tool.replace(/^browser_/, '')
+    const state =
+      value.phase === 'running' ? t('float.running') : value.ok === false ? t('float.failed') : t('float.done')
+    return `${tool}${value.summary ? ` · ${value.summary}` : ''} · ${state}`
+  }
+
+  const toggleLarge = (): void => {
+    setLarge((current) => {
+      const next = !current
+      persistFloat(FLOAT_SIZE_KEY, next ? 'large' : 'compact')
+      return next
+    })
+  }
+
+  if (hidden) {
+    return (
+      <button
+        className="ojb-float-tab"
+        title={t('float.show')}
+        aria-label={t('float.show')}
+        onClick={() => {
+          setHidden(false)
+          setFlash((value) => value + 1)
+          void captureNow()
+        }}
+      >
+        {thumbSrc ? <img src={thumbSrc} alt="" /> : <span className="ojb-float-tab-glyph">◧</span>}
+      </button>
+    )
+  }
+
+  return (
+    <div
+      key={`ojb-float-${flash}`}
+      ref={box}
+      className="ojb-float ojb-float-pop"
+      style={{ left: at.x, top: at.y, width: widthPx }}
+      role="region"
+      aria-label={t('float.title')}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') setHidden(true)
+      }}
+    >
+      <div
+        className="ojb-float-head"
+        title={t('float.captureHint')}
+        onPointerDown={(event) => {
+          if (event.button !== 0) return
+          const rect = box.current?.getBoundingClientRect()
+          drag.current = { dx: event.clientX - (rect?.left ?? at.x), dy: event.clientY - (rect?.top ?? at.y) }
+        }}
+        onDoubleClick={toggleLarge}
+      >
+        <span className={`ojb-float-dot${running ? ' ojb-float-dot-busy' : failed ? ' ojb-float-dot-bad' : ''}`} />
+        <span className="ojb-float-title">{t('float.title')}</span>
+        <button
+          className="ojb-float-btn"
+          title={large ? t('float.shrink') : t('float.expand')}
+          aria-label={large ? t('float.shrink') : t('float.expand')}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={toggleLarge}
+        >
+          {large ? '⤡' : '⤢'}
+        </button>
+        <button
+          className="ojb-float-btn"
+          title={t('float.close')}
+          aria-label={t('float.close')}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={() => setHidden(true)}
+        >
+          ×
+        </button>
+      </div>
+      <div className="ojb-float-body">
+        <div
+          className={`ojb-float-shot${large ? ' ojb-float-shot-large' : ''}`}
+          title={large ? t('float.shrink') : t('float.expand')}
+          onClick={toggleLarge}
+        >
+          {imageSrc ? (
+            <img src={imageSrc} alt={page.title || t('float.untitled')} onError={() => setImgFailed(true)} />
+          ) : (
+            <div className="ojb-float-shot-empty">
+              {noFrame ? null : <span className="ojb-float-spinner" />}
+              <span>{noFrame ? t('float.previewUnavailable') : t('float.waiting')}</span>
+            </div>
+          )}
+          <span className={`ojb-float-badge${failed ? ' is-bad' : ''}`} title={activity?.detail ?? ''}>
+            {running ? <span className="ojb-float-badge-dot" /> : null}
+            <span className="ojb-float-badge-text" aria-live="polite">
+              {activity ? describe(activity) : t('float.idle')}
+            </span>
+          </span>
+        </div>
+        <div className="ojb-float-line">
+          <span className="ojb-float-page-title" title={page.title || ''}>
+            {page.title || t('float.untitled')}
+          </span>
+        </div>
+        <div className="ojb-float-url" title={page.url || ''}>
+          {page.url || '-'}
+        </div>
+        {failed && activity?.detail ? (
+          <div className="ojb-float-error" title={activity.detail}>
+            {activity.detail}
+          </div>
+        ) : null}
+        <div className="ojb-float-meta">
+          <span>
+            {String(browser.channel ?? '-')}
+            {browser.version ? ` · ${browser.version}` : ''}
+          </span>
+          <span>
+            {snap.headed ? t('float.headed') : t('float.headless')}
+            {snap.viewport ? ` · ${snap.viewport[0]}×${snap.viewport[1]}` : ''}
+          </span>
+          <span className="ojb-float-spacer" />
+          <span>{preview ? new Date(preview.at).toLocaleTimeString() : '—'}</span>
+          <button
+            className="ojb-float-btn"
+            title={t('float.refresh')}
+            aria-label={t('float.refresh')}
+            onClick={(event) => {
+              event.stopPropagation()
+              void captureNow()
+            }}
+          >
+            ⟳
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // The controller is a module-level singleton so both slots (section page and
 // plugin card) share one state source.
 let controllerRef!: SettingsController
@@ -880,12 +1447,24 @@ let controllerRef!: SettingsController
 // ---------------------------------------------------------------------------
 
 export function apply(ctx: any): void {
-  if (typeof document !== 'undefined' && !document.getElementById('ojb-style')) {
+  // Styles live in <head> for the frame's lifetime; own them with an effect so
+  // a plugin reload replaces them instead of leaving stale rules behind.
+  const mountStyles = (): (() => void) => {
+    if (typeof document === 'undefined') return () => {}
+    // The replace-then-create order keeps the newest tag when a hot reload
+    // mounts the new instance before disposing the old one.
+    const previous = document.getElementById('ojb-style')
+    if (previous) previous.remove()
     const tag = document.createElement('style')
     tag.id = 'ojb-style'
     tag.textContent = CSS
     document.head.appendChild(tag)
+    return () => {
+      tag.remove()
+    }
   }
+  if (typeof ctx.effect === 'function') ctx.effect(mountStyles, 'dsh-openjev-browser: styles')
+  else mountStyles()
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-openjev-browser: dictionaries')
   const controller = new SettingsController()
   controllerRef = controller
@@ -933,4 +1512,13 @@ export function apply(ctx: any): void {
       ctx.slots.register({ name: slot, key: NS, locale: NS, inject: face }, setupRender),
     )
   }
+
+  // Floating page preview: pops up when a browser tool is called, shows the
+  // current page frame, draggable and collapsible. Mounted frame-wide so it
+  // is never clipped by a column's overflow.
+  ctx.slots.inject('shell.overlay', () =>
+    ctx.slots.register({ name: 'shell.overlay', id: `${NS}-browser-float`, order: 25 }, (p: SectionProps) => (
+      <BrowserFloat {...p} t={t} />
+    )),
+  )
 }

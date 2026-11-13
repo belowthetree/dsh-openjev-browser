@@ -4,3 +4,6 @@ lib/
 .tmp/
 models/
 .DS_Store
+__pycache__/
+*.py[cod]
+.research/

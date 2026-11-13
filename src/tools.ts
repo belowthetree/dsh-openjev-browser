@@ -7,7 +7,7 @@
  * detection so agents can self-diagnose "decision model failed" results.
  */
 
-import { BrowserSession } from './session.js'
+import { BrowserSession, type PreviewFrame } from './session.js'
 import { admitImage } from './image.js'
 import type { ModelManager, ModelConfig } from './model.js'
 
@@ -42,9 +42,58 @@ function errorValue(tool: string, err: unknown): Record<string, unknown> {
   return { ok: false, tool, error: err instanceof Error ? err.message : String(err) }
 }
 
+/** One browser-tool call, surfaced to the client floating preview. */
+export interface ToolActivity {
+  tool: string
+  phase: 'running' | 'done'
+  ok?: boolean
+  /** First useful argument (goal / url / selector), never typed text. */
+  summary?: string
+  /** Failure reason, when the tool returned an error value. */
+  detail?: string
+  at: number
+  /** Monotonic revision: the client pops the floating preview when it moves. */
+  rev: number
+}
+
+function shorten(value: string, limit: number): string {
+  return value.length > limit ? `${value.slice(0, limit - 1)}…` : value
+}
+
+/**
+ * A short, non-sensitive summary of the call for the floating preview.
+ * `text` is deliberately excluded: browser_type may carry passwords.
+ */
+function toolSummary(args: Record<string, unknown> | undefined): string | undefined {
+  if (!args) return undefined
+  for (const key of ['goal', 'url', 'selector', 'direction']) {
+    const value = args[key]
+    if (typeof value !== 'string') continue
+    const clean = value.replace(/\s+/g, ' ').trim()
+    if (clean) return shorten(clean, 96)
+  }
+  return undefined
+}
+
+/** Interpret a tool return value: soft failures carry `ok: false`. */
+function toolOutcome(value: unknown): { ok: boolean; detail?: string } {
+  if (value === null || typeof value !== 'object') return { ok: true }
+  const record = value as Record<string, unknown>
+  if (record.ok !== false) return { ok: true }
+  const reason = record.error ?? record.reason
+  return {
+    ok: false,
+    detail: typeof reason === 'string' ? shorten(reason.replace(/\s+/g, ' ').trim(), 180) : undefined,
+  }
+}
+
 /** Lazily create the browser session; reused across calls until closed. */
 export class SessionManager {
   private session: BrowserSession | null = null
+  private activityState: ToolActivity | null = null
+  private activityRev = 0
+  private callSeq = 0
+  private runningCalls = new Map<number, { tool: string; summary?: string; at: number }>()
 
   constructor(private readonly deps: PluginDeps) {}
 
@@ -64,6 +113,9 @@ export class SessionManager {
         timeoutMs: cfg.timeoutMs,
       })
       await this.session.start()
+      // browser_open creates the session after beginTool() ran: keep the
+      // in-flight marker balanced so preview captures wait for it to finish.
+      if (this.runningCalls.size > 0) this.session.noteOperation(1)
       this.deps.log('info', `dsh-openjev-browser: browser started ${JSON.stringify(this.session.browserInfo)}`)
     }
     return this.session
@@ -74,6 +126,83 @@ export class SessionManager {
       await this.session.close()
       this.session = null
     }
+  }
+
+  /**
+   * Record the start of one browser tool call and return its token. The token
+   * makes concurrent calls from several Sessions resolvable: the floating
+   * preview reports the newest call still running.
+   */
+  beginTool(tool: string, summary?: string): number {
+    this.session?.noteOperation(1)
+    this.activityRev += 1
+    this.callSeq += 1
+    const id = this.callSeq
+    this.runningCalls.set(id, { tool, summary, at: Date.now() })
+    this.activityState = { tool, phase: 'running', summary, at: Date.now(), rev: this.activityRev }
+    return id
+  }
+
+  /** Record the end of one browser tool call and refresh the preview frame. */
+  finishTool(id: number, tool: string, ok: boolean, detail?: string): void {
+    const finished = this.runningCalls.get(id)
+    this.runningCalls.delete(id)
+    this.session?.noteOperation(-1)
+    this.activityRev += 1
+    const running = this.newestRunning()
+    this.activityState = running ?? {
+      tool,
+      phase: 'done',
+      ok,
+      summary: finished?.summary,
+      detail,
+      at: Date.now(),
+      rev: this.activityRev,
+    }
+    // Grab the page the tool left behind; the client polls within ~1s.
+    const session = this.session
+    if (session) void session.capturePreview({ minIntervalMs: 600 }).catch(() => {})
+  }
+
+  private newestRunning(): ToolActivity | null {
+    let newestId = -1
+    let entry: { tool: string; summary?: string; at: number } | null = null
+    for (const [id, call] of this.runningCalls) {
+      if (id > newestId) {
+        newestId = id
+        entry = call
+      }
+    }
+    return entry ? { tool: entry.tool, phase: 'running', summary: entry.summary, at: entry.at, rev: this.activityRev } : null
+  }
+
+  /** Latest activity, or null before the first browser tool call. */
+  get activity(): ToolActivity | null {
+    return this.activityState
+  }
+
+  /** Force one preview capture (the floating panel's live view). */
+  async capture(): Promise<void> {
+    const session = this.session
+    if (!session) return
+    try {
+      await session.capturePreview({ force: true })
+    } catch {
+      // a missing frame must never fail the endpoint
+    }
+  }
+
+  /** Latest cached preview frame, for the binary preview endpoint. */
+  preview(): PreviewFrame | null {
+    return this.session?.currentPreview() ?? null
+  }
+
+  /** Status snapshot for the client-side floating browser panel. */
+  async snapshot(): Promise<Record<string, unknown>> {
+    const base = this.session
+      ? await this.session.snapshot().catch(() => ({ open: false }))
+      : { open: false }
+    return { ...base, activity: this.activityState, running: this.runningCalls.size > 0 }
   }
 }
 
@@ -92,7 +221,7 @@ interface ToolDef {
 export function buildTools(sessions: SessionManager, deps: PluginDeps): ToolDef[] {
   const jsonRender = (_args: Record<string, unknown>, value: unknown) => textBlocks(value)
 
-  return [
+  const tools: ToolDef[] = [
     {
       name: 'browser_open',
       description:
@@ -339,6 +468,32 @@ export function buildTools(sessions: SessionManager, deps: PluginDeps): ToolDef[
       },
     },
   ]
+
+  return tools.map((def) => withActivity(def, sessions))
+}
+
+/**
+ * Wrap one tool so every browser call is visible to the client floating
+ * preview: activity revisions trigger the popup, and the frame is refreshed
+ * once the tool settles. Errors are re-thrown unchanged.
+ */
+function withActivity(def: ToolDef, sessions: SessionManager): ToolDef {
+  return {
+    ...def,
+    execute: async (args, exec) => {
+      const call = sessions.beginTool(def.name, toolSummary(args as Record<string, unknown> | undefined))
+      let value: unknown
+      try {
+        value = await def.execute(args, exec)
+      } catch (err) {
+        sessions.finishTool(call, def.name, false, err instanceof Error ? err.message : String(err))
+        throw err
+      }
+      const outcome = toolOutcome(value)
+      sessions.finishTool(call, def.name, outcome.ok, outcome.detail)
+      return value
+    },
+  }
 }
 
 function screenshotRender(_args: Record<string, unknown>, value: unknown): ContentBlock[] {

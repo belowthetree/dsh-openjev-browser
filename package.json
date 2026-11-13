@@ -1,7 +1,7 @@
 {
   "name": "dsh-openjev-browser",
   "description": "DSH cordis plugin: model-driven browser control (OpenJev-4B element picking) with model auto-detection and guided setup.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",

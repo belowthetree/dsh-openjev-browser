@@ -121,7 +121,7 @@ export function apply(ctx: Context, rawConfig?: unknown): void {
   // profiles). Optional inject keeps headless/tools-only hosts working.
   const registerApi = (webServer: any) => {
     if (!webServer || typeof webServer.register !== 'function') return
-    const handler = createApiHandler({ config, loaderConfig: rawConfig, models, downloads, log, applySavedSettings })
+    const handler = createApiHandler({ config, loaderConfig: rawConfig, models, downloads, sessions, log, applySavedSettings })
     const register = () => webServer.register({ kind: 'prefix', path: API_PREFIX, handler })
     if (typeof ctx.effect === 'function') ctx.effect(register, 'settings api')
     else register()

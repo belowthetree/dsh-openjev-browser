@@ -23,6 +23,27 @@ export class BrowserError extends Error {}
 /** Below this probability a pick is flagged as a guess. */
 export const LOW_CONFIDENCE = 0.5
 
+/** Cached frame served to the client-side floating preview. */
+export interface PreviewFrame {
+  data: Buffer
+  format: 'jpeg' | 'png'
+  seq: number
+  at: number
+  width: number
+  height: number
+  bytes: number
+}
+
+/** Reuse large screenshots at most this big as the floating preview frame. */
+const MAX_PREVIEW_BYTES = 6 * 1024 * 1024
+/** Force-refresh requests closer together than this reuse the cached frame. */
+const PREVIEW_FORCE_GAP_MS = 500
+/**
+ * Frame sequence shared by every session in the host process: the client
+ * caches by sequence, so a reopened browser must never reuse an old number.
+ */
+let previewSequence = 0
+
 export interface SessionOptions {
   headless?: boolean
   browser?: string
@@ -111,6 +132,14 @@ export class BrowserSession {
   browserInfo: Record<string, unknown> = {}
   lastObservation: Observation | null = null
 
+  /** Latest frame for the client floating preview (never sent to the model). */
+  private previewFrame: PreviewFrame | null = null
+  private previewSeq = 0
+  private previewAt = 0
+  private capturePending: Promise<PreviewFrame | null> | null = null
+  /** Tool operations currently touching the page; captures wait for them. */
+  private activeOps = 0
+
   constructor(options: SessionOptions) {
     const browser = options.browser ?? 'auto'
     if (!(browser in BROWSER_CHOICES)) {
@@ -132,6 +161,7 @@ export class BrowserSession {
   // ------------------------------------------------------------- lifecycle
   async start(): Promise<Record<string, unknown>> {
     configureEnv()
+    this.resetPreview()
     let lastError: unknown = null
     let used: LaunchArgs | null = null
 
@@ -217,6 +247,100 @@ export class BrowserSession {
     }
     this.browser_ = this.context = null
     this.page = null
+    this.resetPreview()
+  }
+
+  // -------------------------------------------------------------- preview
+  /** Mark the start (delta=1) or end (delta=-1) of one tool operation. */
+  noteOperation(delta: 1 | -1): void {
+    this.activeOps = Math.max(0, this.activeOps + delta)
+  }
+
+  /** Latest cached preview frame, or null before the first capture. */
+  currentPreview(): PreviewFrame | null {
+    return this.previewFrame
+  }
+
+  /** Small JSON description of the cached frame for the status endpoint. */
+  previewSnapshot(): Record<string, unknown> | null {
+    const frame = this.previewFrame
+    if (!frame) return null
+    return { seq: frame.seq, at: frame.at, width: frame.width, height: frame.height, bytes: frame.bytes, format: frame.format }
+  }
+
+  private resetPreview(): void {
+    this.previewFrame = null
+    this.previewSeq = 0
+    this.previewAt = 0
+    this.capturePending = null
+    this.activeOps = 0
+  }
+
+  private rememberPreview(data: Buffer, format: 'jpeg' | 'png'): PreviewFrame | null {
+    if (data.length > MAX_PREVIEW_BYTES) return this.previewFrame
+    previewSequence += 1
+    this.previewSeq = previewSequence
+    this.previewAt = Date.now()
+    this.previewFrame = {
+      data,
+      format,
+      seq: this.previewSeq,
+      at: this.previewAt,
+      width: this.viewport[0],
+      height: this.viewport[1],
+      bytes: data.length,
+    }
+    return this.previewFrame
+  }
+
+  /**
+   * Capture (or reuse) one JPEG frame of the visible page for the client
+   * floating preview. Never throws: while a tool operation is in flight or
+   * the page is navigating it returns the cached frame instead of racing the
+   * page, and a failed screenshot keeps whatever was cached.
+   */
+  async capturePreview(opts: { force?: boolean; minIntervalMs?: number } = {}): Promise<PreviewFrame | null> {
+    const page = this.page
+    if (!page) return null
+    if (this.capturePending) return this.capturePending
+    if (this.activeOps > 0) return this.previewFrame
+    const now = Date.now()
+    if (this.previewFrame && now - this.previewAt < (opts.force ? PREVIEW_FORCE_GAP_MS : opts.minIntervalMs ?? 0)) {
+      return this.previewFrame
+    }
+    this.capturePending = (async (): Promise<PreviewFrame | null> => {
+      try {
+        const data = await page.screenshot({
+          type: 'jpeg',
+          quality: 58,
+          timeout: 5_000,
+          animations: 'allow',
+        })
+        return this.rememberPreview(data, 'jpeg')
+      } catch {
+        return this.previewFrame
+      } finally {
+        this.capturePending = null
+      }
+    })()
+    return this.capturePending
+  }
+
+  /** Await the page title without letting a busy page stall status polling. */
+  private async titleWithin(page: Page, timeoutMs: number): Promise<string> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        page.title(),
+        new Promise<string>((resolve) => {
+          timer = setTimeout(() => resolve(''), timeoutMs)
+        }),
+      ])
+    } catch {
+      return ''
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
+    }
   }
 
   // -------------------------------------------------------------- navigate
@@ -489,6 +613,12 @@ export class BrowserSession {
       }
     }
 
+    // Reuse a plain viewport shot in the client floating preview so
+    // browser_screenshot costs no extra render. Full-page frames would be
+    // unreadable in a small panel, and a goal highlight is a transient tool
+    // artifact - neither represents "what the browser is showing".
+    if (!(opts.fullPage ?? false) && !highlighted) this.rememberPreview(data, imageFormat)
+
     let saved: string | null = null
     if (opts.path) {
       await mkdir(dirname(opts.path), { recursive: true })
@@ -542,6 +672,32 @@ export class BrowserSession {
   private requirePage(): Page {
     if (!this.page) throw new BrowserError('browser not started - call browser_open first')
     return this.page
+  }
+
+  /**
+   * Lightweight status for the client-side floating browser panel: what is
+   * running, which page, headed or not. Never throws — a page that is closing
+   * or navigating just reports empty strings.
+   */
+  async snapshot(): Promise<Record<string, unknown>> {
+    const page = this.page
+    if (!page) return { open: false }
+    let url = ''
+    try {
+      url = page.url()
+    } catch {
+      // detached page
+    }
+    const title = await this.titleWithin(page, 900)
+    return {
+      open: true,
+      browser: this.browserInfo,
+      page: { url, title },
+      headed: !this.headless,
+      viewport: [...this.viewport],
+      busy: this.activeOps > 0,
+      preview: this.previewSnapshot(),
+    }
   }
 }
 

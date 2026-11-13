@@ -25,6 +25,28 @@ so the agent never ingests the DOM.
 Tool names and parameter schemas match the Python MCP server; migrate call
 sites by dropping the `mcp__openjev-browser__` prefix.
 
+## Floating preview
+
+When any browser tool is called, a floating window pops up on the DSH overlay
+and shows a **screenshot of the page the plugin browser is on**, its title and
+URL, and the tool call that just ran (for example `click · Sign in · done`).
+The host captures the frame after the tool settles and serves it over the
+loopback API only; **it never enters the model context**.
+
+- Drag the header to move it (the position is remembered); double-click the
+  header or the frame to switch between compact and large;
+- × collapses it into a page-thumbnail tab on the right edge — **the next
+  browser tool call pops it up again**;
+- While the panel is visible and browser tools are active the frame refreshes
+  about every 1.5 seconds; an idle page is not re-captured (use ⟳ to refresh
+  manually), and captures pause while a tool is operating the page;
+- Closing the browser removes the window and the tab.
+
+The preview shares the settings API, which is **loopback-only**. When DSH Web
+binds a non-loopback address and you open it from another machine that API
+answers 403 and the window will not appear; the browser tools themselves are
+unaffected.
+
 ## Install
 
 ```bash
